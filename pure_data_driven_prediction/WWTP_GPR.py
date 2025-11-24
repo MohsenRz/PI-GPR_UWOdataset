@@ -28,13 +28,13 @@ precipitation['timestamp'] = pd.to_datetime(precipitation['timestamp'])
 
 # train parameters
 train_start_time = pd.to_datetime("2019-01-01 00:00:00")
-train_days = 7  # Number of days for training
+train_days = 21  # Number of days for training
 train_end_time = train_start_time + pd.Timedelta(days=train_days)
 
 # test parameters
-test_hours = 12  # Hours to predict
+test_hours = 72  # Hours to predict
 test_end_time = train_end_time + pd.Timedelta(hours=test_hours)
-timeinterval = 10 # minutes 
+timeinterval = 15 # minutes 
 
 WWTP_inflow_train = WWTP_inflow[(WWTP_inflow['timestamp'] >= train_start_time) & (WWTP_inflow['timestamp'] <= train_end_time)]
 precipitation_train = precipitation[(precipitation['timestamp'] >= train_start_time) & (precipitation['timestamp'] <= train_end_time)]
@@ -91,11 +91,34 @@ def preparing_data(merged_data, start_time):
     
     return X_multi, Y, timestamps
 
-def build_gpr_model(X_train, Y_train):
-    # training the Gaussian process mdoel 
-    kernel1 = gpflow.kernels.SquaredExponential(lengthscales=[1.0, 1.0], variance=1.0)
+def build_gpr_model(X_train, Y_train, time_std_dev):
+    """
+    Build and train GPR model
+    X_train: Scaled training data 
+    Y_train: Scaled target data
+    time_std_dev: the scaling factor (std) of the Time Column from scalara_X.scale_[0]
+    """ 
+    minutes_in_day = 24 * 60
+    scaled_period = minutes_in_day / time_std_dev  # Adjust period based on scaling
+    print(f"Scaled period for daily cycle: {scaled_period}")
+    
+    kernel_daily = gpflow.kernels.Periodic(gpflow.kernels.SquaredExponential(active_dims = [0], lengthscales=0.01, variance=0.8), 
+                                            period=scaled_period)   # daily periodicity
+    kernel_weekly = gpflow.kernels.Periodic(gpflow.kernels.SquaredExponential(active_dims = [0], lengthscales=0.07, variance=0.5), 
+                                             period=scaled_period * 7)  # weekly periodicity
+    #long_term_kernel = gpflow.kernels.RBF(lengthscales=20.0 * scaled_period, variance=1.0, active_dims=[0])
+    kernel_rain = gpflow.kernels.Matern12(lengthscales=0.2, variance=20, active_dims=[1])
     kernel_noise = gpflow.kernels.White()
-    kernel = kernel1 + kernel_noise
+    
+    kernel_daily.active_dims = [0]
+    kernel_weekly.active_dims = [0]
+    kernel_rain.active_dims = [1]   
+    
+    gpflow.set_trainable(kernel_daily.period, False)
+    gpflow.set_trainable(kernel_weekly.period, False)
+    gpflow.set_trainable(kernel_weekly.base_kernel.lengthscales, False)
+    
+    kernel = kernel_daily * kernel_weekly + kernel_rain + kernel_noise
     
     X_train_tf = tf.convert_to_tensor(X_train, dtype=tf.float64)
     Y_train_tf = tf.convert_to_tensor(Y_train, dtype=tf.float64)
@@ -108,43 +131,46 @@ def build_gpr_model(X_train, Y_train):
                  model.trainable_variables, 
                  method='L-BFGS-B')
     
-    print(f"\nOptimized kernel parameters:")
-    print(f"Lengthscales: {model.kernel.kernels[0].lengthscales.numpy()}")
-    print(f"Variance: {model.kernel.kernels[0].variance.numpy()}")
-    print(f"Noise variance: {model.kernel.kernels[1].variance.numpy()}")
-    
+    print("\nModel Summary:")
+    gpflow.utilities.print_summary(model)
+ 
     return model
 
-
-def model_evaluation(Y_true, Y_pred, std_pred, dataset_name=""):
+def model_evaluation(Y_true, Y_pred, std_pred):
     """
-    Evaluate model performance
+    Returns a dictionary of metrics for easy table formatting.
     """
-    # Calculate metrics
+    # Standard Metrics
     MSE = np.mean((Y_true.ravel() - Y_pred.ravel())**2)
     RMSE = np.sqrt(MSE)
     MAE = np.mean(np.abs(Y_true.ravel() - Y_pred.ravel()))
     
-    # Calculate coverage (95% confidence interval)
+    # Coverage
     lower_bound = Y_pred.ravel() - 1.96 * std_pred.ravel()
     upper_bound = Y_pred.ravel() + 1.96 * std_pred.ravel()
     points_inside = np.sum((Y_true.ravel() >= lower_bound) & 
                            (Y_true.ravel() <= upper_bound))
     coverage = points_inside / len(Y_true)
     
-    print(f"\n{dataset_name} Evaluation:")
-    print(f"RMSE: {RMSE:.4f}")
-    print(f"MAE: {MAE:.4f}")
-    print(f"Coverage (95% CI): {coverage*100:.1f}%")
+    # Entropy (Nats)
+    variance = std_pred.ravel() ** 2
+    # Use log2 for Bits
+    entropy_per_point = 0.5 * np.log2(2 * np.pi * np.e * variance)
+    mean_entropy = np.mean(entropy_per_point)
     
-    return RMSE, MAE, coverage 
+    return {
+        "RMSE (L/s)": RMSE,
+        "MAE (L/s)": MAE,
+        "Coverage (%)": coverage * 100,
+        "Entropy (nats)": mean_entropy
+    }
 
 def plot_results(timestamps_train, Y_train, Y_pred_train, std_train,
                  timestamps_test, Y_test, Y_pred_test, std_test):
     """
     Plot training and test results
     """
-    fig, ax = plt.subplots(figsize=(16, 7), dpi=300)
+    fig, ax = plt.subplots(figsize=(12, 6))
     
     # Plot training data
     ax.scatter(timestamps_train, Y_train.ravel(), c='blue', s=15, 
@@ -171,10 +197,10 @@ def plot_results(timestamps_train, Y_train, Y_pred_train, std_train,
                linewidth=1.5, label='Train/Test Split', zorder=5)
     
     # Formatting
-    ax.set_xlabel('Date', fontsize=14)
-    ax.set_ylabel('WWTP Inflow', fontsize=14)
+    ax.set_xlabel('Date', fontsize=12)
+    ax.set_ylabel('WWTP Inflow', fontsize=12)
     ax.set_title(f'GPR: WWTP Inflow Prediction (Train: {train_days} days, Test: {test_hours} hours)', 
-                 fontsize=16)
+                 fontsize=14)
     ax.legend(fontsize=11, loc='best')
     ax.grid(True, alpha=0.3)
     
@@ -195,53 +221,66 @@ def main():
     # Prepare training data
     X_train, Y_train, timestamps_train = preparing_data(merged_train, train_start_time)
     
-    # Standardize training data
+    # Standardize
     scaler_X = StandardScaler()
     scaler_Y = StandardScaler()
     X_train_scaled = scaler_X.fit_transform(X_train)
     Y_train_scaled = scaler_Y.fit_transform(Y_train)
     
-    # Build and train model
+    # --- PASS THE TIME SCALING FACTOR TO THE MODEL BUILDER ---
+    # scaler_X.scale_[0] is the standard deviation of the Time column
     print("\nTraining GPR model...")
-    model = build_gpr_model(X_train_scaled, Y_train_scaled)
+    model = build_gpr_model(X_train_scaled, Y_train_scaled, scaler_X.scale_[0])
     
-    # Predict on training data
+    # --- PREDICTION ON TRAIN ---
     X_train_tf = tf.convert_to_tensor(X_train_scaled, dtype=tf.float64)
-    mean_train, var_train = model.predict_f(X_train_tf)
-    Y_pred_train_scaled = mean_train.numpy()
-    std_train_scaled = np.sqrt(var_train.numpy())
+    # Use predict_y for metrics (noisy)
+    mean_train_sc, var_train_y_sc = model.predict_y(X_train_tf)
+    # Use predict_f for plotting (smooth)
+    _, var_train_f_sc = model.predict_f(X_train_tf)
     
-    # Transform back to original scale
-    Y_pred_train = scaler_Y.inverse_transform(Y_pred_train_scaled)
-    std_train = std_train_scaled * scaler_Y.scale_
+    Y_pred_train = scaler_Y.inverse_transform(mean_train_sc.numpy())
+    std_train_y = np.sqrt(var_train_y_sc.numpy()) * scaler_Y.scale_
+    std_train_f = np.sqrt(var_train_f_sc.numpy()) * scaler_Y.scale_
     
-    # Evaluate on training data
-    model_evaluation(Y_train, Y_pred_train, std_train, "Training Set")
-    
-    # Prepare test data (with actual precipitation)
+    # --- PREDICTION ON TEST ---
     X_test, Y_test, timestamps_test = preparing_data(merged_test, train_start_time)
     X_test_scaled = scaler_X.transform(X_test)
     
-    # Predict on test data
     print(f"\nGenerating {test_hours}-hour predictions...")
     X_test_tf = tf.convert_to_tensor(X_test_scaled, dtype=tf.float64)
-    mean_test, var_test = model.predict_f(X_test_tf)
-    Y_pred_test_scaled = mean_test.numpy()
-    std_test_scaled = np.sqrt(var_test.numpy())
     
-    # Transform back to original scale
-    Y_pred_test = scaler_Y.inverse_transform(Y_pred_test_scaled)
-    std_test = std_test_scaled * scaler_Y.scale_
+    mean_test_sc, var_test_y_sc = model.predict_y(X_test_tf)
+    _, var_test_f_sc = model.predict_f(X_test_tf)
     
-    # Evaluate on test data
-    model_evaluation(Y_test, Y_pred_test, std_test, "Test Set")
+    Y_pred_test = scaler_Y.inverse_transform(mean_test_sc.numpy())
+    std_test_y = np.sqrt(var_test_y_sc.numpy()) * scaler_Y.scale_
+    std_test_f = np.sqrt(var_test_f_sc.numpy()) * scaler_Y.scale_
     
-    # Plot results
-    plot_results(timestamps_train, Y_train, Y_pred_train, std_train,
-                 timestamps_test, Y_test, Y_pred_test, std_test)
+    # --- COMPARISON TABLE ---
+    # 1. Get Metrics Dictionaries
+    train_metrics = model_evaluation(Y_train, Y_pred_train, std_train_y)
+    test_metrics = model_evaluation(Y_test, Y_pred_test, std_test_y)
+    
+    # 2. Create DataFrame
+    results_df = pd.DataFrame({
+        'Training Set': train_metrics,
+        'Test Set': test_metrics
+    })
+    
+    print("\n" + "="*50)
+    print("MODEL PERFORMANCE")
+    print("="*50)
+    print(results_df.round(4))
+    print("="*50)
     
     total_time = time.time() - total_start
     print(f"\nTotal execution time: {total_time:.2f} seconds")
+    
+    # Plot results (Using std_f for cleaner plots)
+    plot_results(timestamps_train, Y_train, Y_pred_train, std_train_f,
+                 timestamps_test, Y_test, Y_pred_test, std_test_f)
+    
     print("\n" + "="*70)
     print("Prediction complete!")
     print("="*70)
