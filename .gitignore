@@ -1,0 +1,6 @@
+RAW_data/
+*.pkl
+*.SQLite
+*.csv
+__pycache__/
+.vscode/

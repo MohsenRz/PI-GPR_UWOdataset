@@ -1,0 +1,364 @@
+[TITLE]
+;;Project Title/Notes
+MODEL: Surrogate sewer model to simulate combined wastewater discharge from RUSSIKON incl. RUB Morgental.
+DATA: Size of the catchment area is provided by Ing.-büro Wiesendanger AG, M. Congiu (2013) - BSc Thesis; data on the CSO Morgental from the city of Fehraltorf (to be treated CONFIDENTIAL!).
+CALIBRATION: Catchment outlet (node 11d) corresponds to UWO monitoring location 'f03' (Veloweg);
+Dry weather flow is derived from flow observations at 'f03';
+Stormwater runoff is represented through one lumped (virtual) subcatchment 'sc1_rus' accounting for 50ha connected area with 35% degree of imperviousness (Russikon)
+RDII flow component is represented by one virtual subcatchment (rdii1).
+Calibration is done for Mar16 - Sep16 with r02 rain and f03 flow observations.
+Frank Blumensaat, 29-Aug-2017.
+
+[OPTIONS]
+;;Option             Value
+FLOW_UNITS           LPS
+INFILTRATION         HORTON
+FLOW_ROUTING         DYNWAVE
+LINK_OFFSETS         DEPTH
+MIN_SLOPE            0
+ALLOW_PONDING        YES
+SKIP_STEADY_STATE    YES
+
+START_DATE           12/31/2016
+START_TIME           00:00:00
+REPORT_START_DATE    01/01/2017
+REPORT_START_TIME    00:00:00
+END_DATE             12/31/2017
+END_TIME             23:55:00
+SWEEP_START          01/01
+SWEEP_END            12/31
+DRY_DAYS             0
+REPORT_STEP          00:05:00
+WET_STEP             00:00:15
+DRY_STEP             00:15:00
+ROUTING_STEP         0:00:15 
+
+INERTIAL_DAMPING     PARTIAL
+NORMAL_FLOW_LIMITED  BOTH
+FORCE_MAIN_EQUATION  D-W
+VARIABLE_STEP        0.75
+LENGTHENING_STEP     0
+MIN_SURFAREA         1.14
+MAX_TRIALS           8
+HEAD_TOLERANCE       0.0015
+SYS_FLOW_TOL         5
+LAT_FLOW_TOL         5
+MINIMUM_STEP         0.5
+THREADS              8
+
+[FILES]
+;;Interfacing Files
+SAVE OUTFLOWS "f03_lps_Qpoll3_sim_2017.txt"
+
+[EVAPORATION]
+;;Data Source    Parameters
+;;-------------- ----------------
+MONTHLY          0.09   0.56   1.22   2.81   3.47   4.6    4.6    4.04   2.91   0.85   0.38   0.09  
+DRY_ONLY         NO
+
+[RAINGAGES]
+;;Name           Format    Interval SCF      Source    
+;;-------------- --------- ------ ------ ----------
+rain_gauge       VOLUME    00:01    1.0      FILE       "r02_mm_utc0_1min_corr.dat" r02        MM   
+
+[SUBCATCHMENTS]
+;;Name           Rain Gage        Outlet           Area     %Imperv  Width    %Slope   CurbLen  SnowPack        
+;;-------------- ---------------- ---------------- -------- -------- -------- -------- -------- ----------------
+A0050RT          rain_gauge       10c              0.53744  27       73.3102  52       0                        
+A0055T           rain_gauge       411              1.7901   0        133.7947 13       0                        
+sc1_rus          rain_gauge       rus3             50       35       50       0.5      0                        
+rdii1            rain_gauge       rus3             30       100      1        0.5      0                        
+
+[SUBAREAS]
+;;Subcatchment   N-Imperv   N-Perv     S-Imperv   S-Perv     PctZero    RouteTo    PctRouted 
+;;-------------- ---------- ---------- ---------- ---------- ---------- ---------- ----------
+A0050RT          0.016      0.25       1.778      5.08       25         OUTLET    
+A0055T           0.016      0.25       1.778      5.08       25         OUTLET    
+sc1_rus          0.01       0.1        0.05       0.05       25         OUTLET    
+rdii1            0.01       0.1        0.05       0.05       25         OUTLET    
+
+[INFILTRATION]
+;;Subcatchment   MaxRate    MinRate    Decay      DryTime    MaxInfil  
+;;-------------- ---------- ---------- ---------- ---------- ----------
+A0050RT          75         1.5        5          7          0         
+A0055T           75         1.5        5          7          0         
+sc1_rus          3.0        0.5        4          7          0         
+rdii1            3.0        0.5        4          7          0         
+
+[JUNCTIONS]
+;;Name           Elevation  MaxDepth   InitDepth  SurDepth   Aponded   
+;;-------------- ---------- ---------- ---------- ---------- ----------
+10_              551.83     1.87       0.04       0          0         
+10a              550.97     1.68       0.04       0          0         
+10b              549.52     1.68       0.04       0          0         
+10c              548.44     2.8        0.04       0          0         
+11               547.61     3.9        0.05       0          0         
+11a              547        2.85       0.04       0          0         
+11b              545.57     3.05       0.04       0          0         
+11c              544.36     3.11       0.04       0          0         
+2c               569.08     4.3        0.03       0          0         
+2d               565.84     2.25       0.03       0          0         
+2e               560.73     4.3        0.03       0          0         
+2f               553.29     3.01       0.04       0          0         
+411              556.33     4.65       0.01       0          0         
+412              555.15     3.26       0.01       0          0         
+413              553.01     2.26       0.01       0          0         
+414              550.53     1.46       0.01       0          0         
+415              547.91     1.5        0.01       0          0         
+416              546.79     1.68       0.01       0          0         
+rus3             575.5      5          0          0          0         
+rus4             575        5          0          0          0         
+
+[OUTFALLS]
+;;Name           Elevation  Type       Stage Data       Gated    Route To        
+;;-------------- ---------- ---------- ---------------- -------- ----------------
+11d              543.08     FREE                        NO                       
+2                560        FREE                        NO                       
+
+[STORAGE]
+;;Name           Elev.    MaxDepth   InitDepth  Shape      Curve Name/Params            N/A      Fevap    Psi      Ksat     IMD     
+;;-------------- -------- ---------- ----------- ---------- ---------------------------- -------- --------          -------- --------
+RKB_Morgenthal   575      4.5        0          TABULAR    RKB_Morgenthal               0        0       
+
+[CONDUITS]
+;;Name           From Node        To Node          Length     Roughness  InOffset   OutOffset  InitFlow   MaxFlow   
+;;-------------- ---------------- ---------------- ---------- ---------- ---------- ---------- ---------- ----------
+10-10a           10_              10a              45.054     0.011764706 0          0          0          0         
+10a-10b          10a              10b              45.037     0.011764706 0          0          0          0         
+10b-10c          10b              10c              44.970     0.011764706 0          0.18       0          0         
+10c-11           10c              11               23.105     0.011764706 0          0          0          0         
+11-11a           11               11a              58.919     0.011764706 0          0          0          0         
+11a-11b          11a              11b              58.950     0.011764706 0          0          0          0         
+11b-11c          11b              11c              46.934     0.011764706 0          0          0          0         
+11c-11d          11c              11d              46.949     0.011764706 0          0          0          0         
+2c-2d            2c               2d               46.356     0.011764706 0          0          0          80        
+2d-2e            2d               2e               36.293     0.011764706 0          2.31       0          0         
+2e-2f            2e               2f               98.954     0.011764706 0          0.02       0          0         
+2f-10            2f               10_              51.732     0.011764706 0          0          0          0         
+411-412          411              412              55.544     0.011764706 0          0          0          0         
+412-413          412              413              60.297     0.011764706 0          0          0          0         
+413-414          413              414              64.871     0.011764706 0          0          0          0         
+414-415          414              415              64.734     0.011764706 0          0          0          0         
+415-416          415              416              64.780     0.011764706 0          0          0          0         
+416-11b          416              11b              64.809     0.011764706 0          0          0          0         
+RKB_Morgenthal_throttle rus4             2c               200        0.011764706 0          0          80         0         
+2                rus3             rus4             30         0.011764706 0          0          0          0         
+
+[WEIRS]
+;;Name           From Node        To Node          Type         CrestHt    Qcoeff     Gated    EndCon   EndCoeff   Surcharge  RoadWidth  RoadSurf  
+;;-------------- ---------------- ---------------- ------------ ---------- ---------- -------- -------- ---------- ---------- ---------- ----------
+1                rus4             2                SIDEFLOW     3.4        3.33       NO       0        0          YES       
+3                rus4             RKB_Morgenthal   SIDEFLOW     3.05       3.33       NO       0        0          YES       
+
+[XSECTIONS]
+;;Link           Shape        Geom1            Geom2      Geom3      Geom4      Barrels    Culvert   
+;;-------------- ------------ ---------------- ---------- ---------- ---------- ---------- ----------
+10-10a           CIRCULAR     0.35             0          0          0          1                    
+10a-10b          CIRCULAR     0.35             0          0          0          1                    
+10b-10c          CIRCULAR     0.4              0          0          0          1                    
+10c-11           CIRCULAR     0.4              0          0          0          1                    
+11-11a           CIRCULAR     0.4              0          0          0          1                    
+11a-11b          CIRCULAR     0.4              0          0          0          1                    
+11b-11c          CIRCULAR     0.4              0          0          0          1                    
+11c-11d          CIRCULAR     0.4              0          0          0          1                    
+2c-2d            CIRCULAR     0.3              0          0          0          1                    
+2d-2e            CIRCULAR     0.3              0          0          0          1                    
+2e-2f            CIRCULAR     0.3              0          0          0          1                    
+2f-10            CIRCULAR     0.35             0          0          0          1                    
+411-412          CIRCULAR     0.3              0          0          0          1                    
+412-413          CIRCULAR     0.3              0          0          0          1                    
+413-414          CIRCULAR     0.3              0          0          0          1                    
+414-415          CIRCULAR     0.3              0          0          0          1                    
+415-416          CIRCULAR     0.3              0          0          0          1                    
+416-11b          CIRCULAR     0.3              0          0          0          1                    
+RKB_Morgenthal_throttle CIRCULAR     0.3              0          0          0          1                    
+2                RECT_CLOSED  5                1          0          0          1                    
+1                RECT_OPEN    1                3          0          0         
+3                RECT_OPEN    1                5          0          0         
+
+[POLLUTANTS]
+;;Name           Units  Crain      Cgw        Crdii      Kdecay     SnowOnly   Co-Pollutant     Co-Frac    Cdwf       Cinit     
+;;-------------- ------ ---------- ---------- ---------- ---------- ---------- ---------------- ---------- ---------- ----------
+COD              MG/L   0.0        0.0        0.0        0.0        NO         *                0.0        500        0.0       
+NH4              MG/L   0.0        0.0        0.0        0.0        NO         *                0.0        50         0.0       
+P                MG/L   0.0        0.0        0.0        0.0        NO         *                0.0        1          0.0       
+
+[LANDUSES]
+;;               Sweeping   Fraction   Last      
+;;Name           Interval   Available  Swept     
+;;-------------- ---------- ---------- ----------
+Strasse          0          0          0         
+
+[COVERAGES]
+;;Subcatchment   Land Use         Percent   
+;;-------------- ---------------- ----------
+A0055T           Strasse          100       
+sc1_rus          Strasse          100       
+
+[LOADINGS]
+;;Subcatchment   Pollutant        Buildup   
+;;-------------- ---------------- ----------
+
+[BUILDUP]
+;;Land Use       Pollutant        Function   Coeff1     Coeff2     Coeff3     Per Unit  
+;;-------------- ---------------- ---------- ---------- ---------- ---------- ----------
+Strasse          COD              EXP        100        1          0          AREA      
+Strasse          NH4              NONE       0          0          0          AREA      
+Strasse          P                NONE       0          0          0          AREA      
+
+[WASHOFF]
+;;Land Use       Pollutant        Function   Coeff1     Coeff2     SweepRmvl  BmpRmvl   
+;;-------------- ---------------- ---------- ---------- ---------- ---------- ----------
+Strasse          COD              EXP        0.1        2          0.0        0.0       
+Strasse          NH4              NONE       0.0        0.0        0.0        0.0       
+Strasse          P                NONE       0          0.0        0.0        0.0       
+
+[DWF]
+;;Node           Constituent      Baseline   Patterns  
+;;-------------- ---------------- ---------- ----------
+rus3             FLOW             15         "daily_var" "weekend_var"
+rus3             COD              500        "dVarCOD_rus"
+rus3             NH4              50         "dVarNH4_rus"
+rus3             P                1         
+
+[CURVES]
+;;Name           Type       X-Value    Y-Value   
+;;-------------- ---------- ---------- ----------
+PW_Bahnhof_QPmax Pump2      0          5         
+PW_Bahnhof_QPmax            1000       5         
+;
+PW_Industrie_Qpmax Pump2      0          25        
+PW_Industrie_Qpmax            10         25        
+;
+Entleerungspumpe_RB_ARA Pump2      0          25        
+Entleerungspumpe_RB_ARA            4          25        
+;
+Entleerungspumpe_FB_ARA Pump2      0          20        
+Entleerungspumpe_FB_ARA            4          20        
+;
+Entleerungspumpe_Usterstrasse Pump2      0          25        
+Entleerungspumpe_Usterstrasse            4          25        
+;
+FB_ARA_Volumen   Storage    0          97.1      
+FB_ARA_Volumen              3.5        97.1      
+;
+PW_Bahnhof_Volumen STORAGE    0          0         
+PW_Bahnhof_Volumen            10         10        
+;
+RÜB_59_Volumen   Storage    0          62.3      
+RÜB_59_Volumen              3.21       62.3      
+;
+RÜB_Industrie_Volumen Storage    0          73.8      
+RÜB_Industrie_Volumen            3.66       73.8      
+;
+RÜB_Usterstrasse Storage    0          65.8      
+RÜB_Usterstrasse            3.04       65.8      
+;
+RKB_Morgenthal   Storage    0          50        
+RKB_Morgenthal              5          50        
+
+[PATTERNS]
+;;Name           Type       Multipliers
+;;-------------- ---------- -----------
+daily_var        HOURLY     0.724941343904911 0.714549610666606 0.703513709088582 0.804841410703621 1.02953137814922 1.14680159285757
+daily_var                   1.20274624120124 1.20709699075334 1.18471050766122 1.14965897378572 1.16011146529542 1.11691527425105
+daily_var                   1.06733750476613 1.03781475581586 1.06710775574707 1.12271986688494 1.17626695899598 1.18885600749722
+daily_var                   1.11908591249519
+;
+weekend_var      WEEKEND    1.797253236 1.274803878 1.515578258 0.645941233 0.439802227 0.595619499
+weekend_var                 1.024703403 1.438539881 1.38499375 1.435455354 1.323259837 1.146317206
+weekend_var                 1.450448134 1.441372047 1.308542212 1.226950124 1.09990839 0.950301854
+weekend_var                 1.060016093 0.962726144 0.974859576 1.175743502 1.573013294 1.186728118
+;
+dVarNH4_rus      HOURLY     0.2   1.15  0.1   1.1   1     1.05 
+dVarNH4_rus                 1.2   1.18  1.2   1.1   1.05  1    
+dVarNH4_rus                 0.85  0.9   0.95  1     0.95  1.05 
+dVarNH4_rus                 1     1     1     1     1     1    
+;
+dVarCOD_rus      HOURLY     0.99  0.3   0.7   0.5   0.85  1    
+dVarCOD_rus                 1.2   1.35  1.45  1.25  1.1   0.9  
+dVarCOD_rus                 0.9   0.94  1.05  1.15  1.11  1.03 
+dVarCOD_rus                 1.01  0.8   1     0.95  1.1   1.03 
+
+[REPORT]
+;;Reporting Options
+INPUT      NO
+CONTROLS   YES
+SUBCATCHMENTS ALL
+NODES ALL
+LINKS ALL
+
+[TAGS]
+
+[MAP]
+DIMENSIONS 697430.000 248497.000 701700.000 252160.000
+Units      None
+
+[COORDINATES]
+;;Node           X-Coord            Y-Coord           
+;;-------------- ------------------ ------------------
+10_              700209.659         249499.920        
+10a              700194.230         249457.590        
+10b              700190.350         249412.720        
+10c              700191.320         249367.760        
+11               700195.120         249344.970        
+11a              700163.350         249295.350        
+11b              700131.260         249245.900        
+11c              700100.330         249210.600        
+2c               700286.399         249774.042        
+2d               700280.110         249673.110        
+2e               700267.020         249639.260        
+2f               700240.529         249571.064        
+411              700503.890         249213.120        
+412              700448.420         249215.980        
+413              700388.170         249218.370        
+414              700323.350         249220.930        
+415              700258.670         249223.580        
+416              700194.300         249230.860        
+rus3             700303.801         250032.176        
+rus4             700335.706         249919.061        
+11d              700086.240         249169.250        
+2                700498.127         249887.157        
+RKB_Morgenthal   700164.583         249878.456        
+
+[VERTICES]
+;;Link           X-Coord            Y-Coord           
+;;-------------- ------------------ ------------------
+10-10a           700196.971         249465.108        
+10b-10c          700190.795         249392.076        
+2f-10            700217.630         249518.991        
+3                700260.296         249919.061        
+
+[Polygons]
+;;Subcatchment   X-Coord            Y-Coord           
+;;-------------- ------------------ ------------------
+A0050RT          700217.716         249461.911        
+A0055T           700604.984         249160.572        
+sc1_rus          701229.022         249945.164        
+sc1_rus          701217.421         250815.278        
+sc1_rus          700332.805         250716.665        
+sc1_rus          700559.035         249916.161        
+rdii1            699854.243         250185.896        
+rdii1            700315.403         250110.486        
+rdii1            700179.085         250618.052        
+rdii1            699865.844         250562.945        
+
+[SYMBOLS]
+;;Gage           X-Coord            Y-Coord           
+;;-------------- ------------------ ------------------
+rain_gauge       699414.383         249669.803        
+
+[LABELS]
+;;X-Coord          Y-Coord            Label           
+699800.000         248057.000         "R04_airfield" "" "Arial" 10 0 0
+
+
+[BACKDROP]
+FILE       "Y:\Vorlesung\UWMx\00 Material\SWMM\Fehraltorf_models\_input\Backdrop_Fehraltorf_Swissimage.bmp"
+DIMENSIONS 697430.000 248497.000 701700.000 252160.000
+
+[PROFILES]
+;;Name           Links     
+;;-------------- ----------
+"                " Notentl.kanal-Bach37 RÜ_48a 48a-58_SBW ÜS_58 HAL775
+"                " 5494-597a
