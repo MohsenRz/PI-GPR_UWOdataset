@@ -11,6 +11,7 @@ import matplotlib.dates as mdates
 import time
 from scipy.stats import norm
 from pathlib import Path
+import tensorflow_probability as tfp
 
 ## Load Data
 BASE = Path(__file__).parent.parent
@@ -32,7 +33,7 @@ train_days = 21  # Number of days for training
 train_end_time = train_start_time + pd.Timedelta(days=train_days)
 
 # test parameters
-test_hours = 72  # Hours to predict
+test_hours = 5 * 24  # Hours to predict
 test_end_time = train_end_time + pd.Timedelta(hours=test_hours)
 timeinterval = 15 # minutes 
 
@@ -54,7 +55,6 @@ WWTP_test_resampled = WWTP_inflow_test.resample(interval_string).mean()
 precipitation_test_resampled = precipitation_test.resample(interval_string).sum()
 
 # Merge Data
-# Corrected Merge Logic
 merged_train = WWTP_train_resampled.join(precipitation_train_resampled, 
                                          lsuffix='_inflow', rsuffix='_precipitation', how='inner')
 merged_test = WWTP_test_resampled.join(precipitation_test_resampled, 
@@ -67,28 +67,27 @@ print(f"Test period: {train_end_time} to {test_end_time} ({test_hours} hours)")
 print(f"Training samples: {len(merged_train)}")
 print(f"Test samples: {len(merged_test)}")
 
-def preparing_data(merged_data, start_time): 
+def preparing_data(merged_data, start_time, interval_minutes=timeinterval): 
     #creating multi dimensional input as timestamps and precipitation data
     timestamps = merged_data.index
     inflow_col = [col for col in merged_data.columns if 'inflow' in col.lower()][0]
     precip_col = [col for col in merged_data.columns if 'precipitation' in col.lower()][0]
     
-    time = np.array([(ts - start_time).total_seconds() / 60.0 for ts in timestamps]).reshape(-1, 1)  # time in minutes
-    rainfall = merged_data[precip_col].values.reshape(-1, 1)
+    time_feat = np.array([(ts - start_time).total_seconds() / 60.0 for ts in timestamps]).reshape(-1, 1)  # time in minutes
+    ## I sum up the previous 30 mins precipitation to consider lag effect
+    # Calculate window size dynamically (Target 30 mins / Interval)
+    window_size = int(30 / interval_minutes) 
+    if window_size < 1: window_size = 1
+    
+    rain_series = merged_data[precip_col]
+    # rolling sum, fill NaN at start with 0
+    rain_accum = rain_series.rolling(window=window_size).sum().fillna(0).values.reshape(-1, 1)
+    
     inflow = merged_data[inflow_col].values.reshape(-1, 1)
     
-    X_multi = np.hstack((time, rainfall))
+    X_multi = np.hstack((time_feat, rain_accum))
     Y = inflow
-    
-    X_train_original = X_multi.copy()
-    timestamp_train = timestamps.copy()
-    
-    #standardised data
-    scaler_X = StandardScaler()
-    X_train_scaled = scaler_X.fit_transform(X_multi)
-    Scalar_Y = StandardScaler()
-    Y_train_scaled = Scalar_Y.fit_transform(Y)
-    
+        
     return X_multi, Y, timestamps
 
 def build_gpr_model(X_train, Y_train, time_std_dev):
@@ -101,24 +100,35 @@ def build_gpr_model(X_train, Y_train, time_std_dev):
     minutes_in_day = 24 * 60
     scaled_period = minutes_in_day / time_std_dev  # Adjust period based on scaling
     print(f"Scaled period for daily cycle: {scaled_period}")
-    
-    kernel_daily = gpflow.kernels.Periodic(gpflow.kernels.SquaredExponential(active_dims = [0], lengthscales=0.01, variance=0.8), 
+    ### daily kernel 
+    kernel_daily = gpflow.kernels.Periodic(gpflow.kernels.SquaredExponential(active_dims=[0], lengthscales=0.01, variance=1), 
                                             period=scaled_period)   # daily periodicity
-    kernel_weekly = gpflow.kernels.Periodic(gpflow.kernels.SquaredExponential(active_dims = [0], lengthscales=0.07, variance=0.5), 
-                                             period=scaled_period * 7)  # weekly periodicity
-    #long_term_kernel = gpflow.kernels.RBF(lengthscales=20.0 * scaled_period, variance=1.0, active_dims=[0])
-    kernel_rain = gpflow.kernels.Matern12(lengthscales=0.2, variance=20, active_dims=[1])
-    kernel_noise = gpflow.kernels.White()
+    bounded_transform_daily = tfp.bijectors.Sigmoid(
+        low=tf.constant(scaled_period/(24*60), dtype=tf.float64), # at least one minute
+        high=tf.constant(scaled_period/3, dtype=tf.float64))    # at most 8 hours 
+    kernel_daily.base_kernel.lengthscales = gpflow.Parameter(0.01, transform=bounded_transform_daily)
+    ### trend kernel 
+    kernel_long_term = gpflow.kernels.RBF(lengthscales=4.0 * scaled_period, variance=1.0, active_dims=[0])
+    bounded_transform_long_term = tfp.bijectors.Sigmoid(
+        low=tf.constant(3.0 * scaled_period, dtype=tf.float64),
+        high=tf.constant(6.0 * scaled_period, dtype=tf.float64))
+    kernel_long_term.lengthscales = gpflow.Parameter(4.0 * scaled_period, transform=bounded_transform_long_term)
+    ### rain kernel 
+    kernel_rain = gpflow.kernels.Matern12(lengthscales=0.05, variance=1, active_dims=[1])
+    bounded_transform_rain = tfp.bijectors.Sigmoid(
+        low=tf.constant(0.01, dtype=tf.float64), 
+        high=tf.constant(0.1, dtype=tf.float64)) 
+    kernel_rain.lengthscales = gpflow.Parameter(0.05, transform=bounded_transform_rain)
+    ### noise kernel
+    kernel_noise = gpflow.kernels.White(0.01)
     
     kernel_daily.active_dims = [0]
-    kernel_weekly.active_dims = [0]
+    kernel_long_term.active_dims = [0]
     kernel_rain.active_dims = [1]   
     
     gpflow.set_trainable(kernel_daily.period, False)
-    gpflow.set_trainable(kernel_weekly.period, False)
-    gpflow.set_trainable(kernel_weekly.base_kernel.lengthscales, False)
     
-    kernel = kernel_daily * kernel_weekly + kernel_rain + kernel_noise
+    kernel = kernel_daily * kernel_long_term + kernel_rain + kernel_noise
     
     X_train_tf = tf.convert_to_tensor(X_train, dtype=tf.float64)
     Y_train_tf = tf.convert_to_tensor(Y_train, dtype=tf.float64)
@@ -218,8 +228,8 @@ def main():
     print("GPR Model for WWTP Inflow Prediction")
     print("="*70)
     
-    # Prepare training data
-    X_train, Y_train, timestamps_train = preparing_data(merged_train, train_start_time)
+    # Prepare training data (Pass interval to calc window size)
+    X_train, Y_train, timestamps_train = preparing_data(merged_train, train_start_time, timeinterval)
     
     # Standardize
     scaler_X = StandardScaler()
@@ -227,16 +237,13 @@ def main():
     X_train_scaled = scaler_X.fit_transform(X_train)
     Y_train_scaled = scaler_Y.fit_transform(Y_train)
     
-    # --- PASS THE TIME SCALING FACTOR TO THE MODEL BUILDER ---
-    # scaler_X.scale_[0] is the standard deviation of the Time column
     print("\nTraining GPR model...")
+    # Pass Time Std Dev for Period Calculation
     model = build_gpr_model(X_train_scaled, Y_train_scaled, scaler_X.scale_[0])
     
     # --- PREDICTION ON TRAIN ---
     X_train_tf = tf.convert_to_tensor(X_train_scaled, dtype=tf.float64)
-    # Use predict_y for metrics (noisy)
     mean_train_sc, var_train_y_sc = model.predict_y(X_train_tf)
-    # Use predict_f for plotting (smooth)
     _, var_train_f_sc = model.predict_f(X_train_tf)
     
     Y_pred_train = scaler_Y.inverse_transform(mean_train_sc.numpy())
@@ -244,7 +251,7 @@ def main():
     std_train_f = np.sqrt(var_train_f_sc.numpy()) * scaler_Y.scale_
     
     # --- PREDICTION ON TEST ---
-    X_test, Y_test, timestamps_test = preparing_data(merged_test, train_start_time)
+    X_test, Y_test, timestamps_test = preparing_data(merged_test, train_start_time, timeinterval)
     X_test_scaled = scaler_X.transform(X_test)
     
     print(f"\nGenerating {test_hours}-hour predictions...")
@@ -258,11 +265,9 @@ def main():
     std_test_f = np.sqrt(var_test_f_sc.numpy()) * scaler_Y.scale_
     
     # --- COMPARISON TABLE ---
-    # 1. Get Metrics Dictionaries
     train_metrics = model_evaluation(Y_train, Y_pred_train, std_train_y)
     test_metrics = model_evaluation(Y_test, Y_pred_test, std_test_y)
     
-    # 2. Create DataFrame
     results_df = pd.DataFrame({
         'Training Set': train_metrics,
         'Test Set': test_metrics
@@ -274,16 +279,12 @@ def main():
     print(results_df.round(4))
     print("="*50)
     
-    total_time = time.time() - total_start
-    print(f"\nTotal execution time: {total_time:.2f} seconds")
-    
-    # Plot results (Using std_f for cleaner plots)
     plot_results(timestamps_train, Y_train, Y_pred_train, std_train_f,
                  timestamps_test, Y_test, Y_pred_test, std_test_f)
     
-    print("\n" + "="*70)
+    total_time = time.time() - total_start
+    print(f"\nTotal execution time: {total_time:.2f} seconds")
     print("Prediction complete!")
-    print("="*70)
 
 if __name__ == "__main__":
     main()
