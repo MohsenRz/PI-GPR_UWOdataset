@@ -1,6 +1,7 @@
 """ 
 making a Gaussian Process Regression model for WWTP data prediction
 sensor data is used 
+sparsification will be applied here using SGPR model from GPflow library
 Author: Mohsen 
 Date: 26/11/2025
 """
@@ -13,7 +14,7 @@ import gpflow
 from sklearn.preprocessing import StandardScaler
 import matplotlib.dates as mdates
 import time
-from scipy.stats import norm
+from scipy.cluster.vq import kmeans 
 from pathlib import Path
 import tensorflow_probability as tfp
 
@@ -28,18 +29,21 @@ precipitation = pd.read_pickle(
     data_path / "precipitation" / "sensor_bn_r02_school_chatzenrainstr_2019_cleaned.pkl")
 
 ## Preprocess Data
-WWTP_inflow['timestamp'] = pd.to_datetime(WWTP_inflow['timestamp'])
-precipitation['timestamp'] = pd.to_datetime(precipitation['timestamp'])
+WWTP_inflow['timestamp'] = pd.to_datetime(WWTP_inflow['timestamp']) # L/s
+precipitation['timestamp'] = pd.to_datetime(precipitation['timestamp']) # mm/hr
 
 # train parameters
 train_start_time = pd.to_datetime("2019-02-01 00:00:00")
-train_days = 90  # Number of days for training
+train_days = 30  # Number of days for training
 train_end_time = train_start_time + pd.Timedelta(days=train_days)
 
 # test parameters
-test_hours = 7 * 24  # Hours to predict
+test_hours = 5 * 24  # Hours to predict
 test_end_time = train_end_time + pd.Timedelta(hours=test_hours)
 timeinterval = 15 # minutes 
+
+# inducing points 
+M = 400  # number of inducing points
 
 WWTP_inflow_train = WWTP_inflow[(WWTP_inflow['timestamp'] >= train_start_time) & (WWTP_inflow['timestamp'] <= train_end_time)]
 precipitation_train = precipitation[(precipitation['timestamp'] >= train_start_time) & (precipitation['timestamp'] <= train_end_time)]
@@ -71,7 +75,7 @@ print(f"Test period: {train_end_time} to {test_end_time} ({test_hours} hours)")
 print(f"Training samples: {len(merged_train)}")
 print(f"Test samples: {len(merged_test)}")
 print(f"Data statistics: mean inflow = {merged_train.filter(like='inflow').mean().values[0]:.2f} L/s,\
-      mean precipitation = {merged_train.filter(like='precipitation').mean().values[0]*60*24/timeinterval:.2f} mm/day")
+      mean precipitation = {merged_train.filter(like='precipitation').mean().values[0]*24/timeinterval:.2f} mm/day")
 
 def preparing_data(merged_data, start_time, interval_minutes=timeinterval): 
     #creating multi dimensional input as timestamps and precipitation data
@@ -96,9 +100,9 @@ def preparing_data(merged_data, start_time, interval_minutes=timeinterval):
         
     return X_multi, Y, timestamps
 
-def build_gpr_model(X_train, Y_train, time_std_dev):
+def build_sgpr_model(X_train, Y_train, time_std_dev):
     """
-    Build and train GPR model
+    Build and train sparse GPR model 
     X_train: Scaled training data 
     Y_train: Scaled target data
     time_std_dev: the scaling factor (std) of the Time Column from scalara_X.scale_[0]
@@ -136,11 +140,19 @@ def build_gpr_model(X_train, Y_train, time_std_dev):
     
     kernel = kernel_daily * kernel_long_term + kernel_rain + kernel_noise
     
+    # sparsification 
+    num_inducing = min(M, X_train.shape[0]//2)  # choose number of inducing points
+    Z_init, _ = kmeans(X_train, num_inducing)
+    Z = tf.convert_to_tensor(Z_init, dtype=tf.float64)
+    
     X_train_tf = tf.convert_to_tensor(X_train, dtype=tf.float64)
     Y_train_tf = tf.convert_to_tensor(Y_train, dtype=tf.float64)
     
-    model = gpflow.models.GPR(data=(X_train_tf, Y_train_tf), 
-                              kernel=kernel, mean_function=None)
+    model = gpflow.models.SGPR(
+        data=(X_train_tf, Y_train_tf),
+        kernel=kernel, mean_function=None, 
+        inducing_variable=Z
+        )
     #optimise hyperparameters
     opt = gpflow.optimizers.Scipy()
     opt.minimize(model.training_loss, 
@@ -182,21 +194,29 @@ def model_evaluation(Y_true, Y_pred, std_pred):
     }
 
 def plot_results(timestamps_train, Y_train, Y_pred_train, std_train,
-                 timestamps_test, Y_test, Y_pred_test, std_test):
+                 timestamps_test, Y_test, Y_pred_test, std_test,
+                 Z_timestamps=None, Z_inflow=None):
     """
-    Plot training and test results
+    Plot training and test results with inducing points 
     """
-    fig, ax = plt.subplots(figsize=(12, 6))
+    fig, ax = plt.subplots(figsize=(14, 7))
     
     # Plot training data
-    ax.scatter(timestamps_train, Y_train.ravel(), c='blue', s=15, 
-               label='Training Data', alpha=0.5, zorder=3)
+    ax.scatter(timestamps_train, Y_train.ravel(), c='blue', s=12, 
+               label='Training Data', alpha=0.4, zorder=2)
     ax.plot(timestamps_train, Y_pred_train.ravel(), 'green', 
             label='GPR Fit (Training)', linewidth=2, zorder=4)
     ax.fill_between(timestamps_train, 
                     Y_pred_train.ravel() - 1.96 * std_train.ravel(),
                     Y_pred_train.ravel() + 1.96 * std_train.ravel(),
                     alpha=0.2, color='green', label='95% CI (Training)', zorder=2)
+    #Plotting Inducing Points 
+    if Z_timestamps is not None:
+        y_min = Y_train.min()
+        ax.plot(Z_timestamps, [y_min]*len(Z_timestamps), '|', c='k', markersize=15, 
+                label='Inducing Points (Z)', zorder=5)
+        #ax.scatter(Z_timestamps, Z_inflow, c='k', marker='x', s=50, 
+        #           linewidth=1.5, label='Inducing Points (Z)', zorder=5)
     
     # Plot test data
     ax.scatter(timestamps_test, Y_test.ravel(), c='orange', s=15,
@@ -208,11 +228,11 @@ def plot_results(timestamps_train, Y_train, Y_pred_train, std_train,
                     Y_pred_test.ravel() + 1.96 * std_test.ravel(),
                     alpha=0.2, color='red', label='95% CI (Test)', zorder=2)
     
-    # Add vertical line separating train/test
+    # vertical line separating train/test
     ax.axvline(x=timestamps_train[-1], color='black', linestyle='--', 
                linewidth=1.5, label='Train/Test Split', zorder=5)
     
-    # Formatting
+    # Labels and legend
     ax.set_xlabel('Date', fontsize=12)
     ax.set_ylabel('WWTP Inflow', fontsize=12)
     ax.set_title(f'GPR: WWTP Inflow Prediction (Train: {train_days} days, Test: {test_hours} hours)', 
@@ -245,7 +265,7 @@ def main():
     
     print("\nTraining GPR model...")
     # Pass Time Std Dev for Period Calculation
-    model = build_gpr_model(X_train_scaled, Y_train_scaled, scaler_X.scale_[0])
+    model = build_sgpr_model(X_train_scaled, Y_train_scaled, scaler_X.scale_[0])
     
     # --- PREDICTION ON TRAIN ---
     X_train_tf = tf.convert_to_tensor(X_train_scaled, dtype=tf.float64)
@@ -270,7 +290,26 @@ def main():
     std_test_y = np.sqrt(var_test_y_sc.numpy()) * scaler_Y.scale_
     std_test_f = np.sqrt(var_test_f_sc.numpy()) * scaler_Y.scale_
     
-    # --- COMPARISON TABLE ---
+    # --- NEW: EXTRACT INDUCING POINTS FOR PLOTTING ---
+    print("\nExtracting Inducing Points...")
+    
+    # 1. Get Z in Scaled Space (Shape: M x 2)
+    Z_scaled = model.inducing_variable.Z.numpy()
+    
+    # 2. Unscale X-coordinates (Time and Rain)
+    Z_unscaled = scaler_X.inverse_transform(Z_scaled)
+    Z_time_minutes = Z_unscaled[:, 0]
+    
+    # 3. Convert Time-Minutes back to Timestamps
+    # We add the minutes to the train_start_time
+    Z_timestamps = [train_start_time + pd.Timedelta(minutes=float(m)) for m in Z_time_minutes]
+    
+    # 4. Calculate Y-coordinates (Inflow) for these points
+    # We ask the model: "What is the expected inflow at these Z locations?"
+    mu_Z_scaled, _ = model.predict_f(Z_scaled)
+    Z_inflow = scaler_Y.inverse_transform(mu_Z_scaled.numpy())
+    
+    # --- EVALUATION TABLE ---
     train_metrics = model_evaluation(Y_train, Y_pred_train, std_train_y)
     test_metrics = model_evaluation(Y_test, Y_pred_test, std_test_y)
     
@@ -284,13 +323,15 @@ def main():
     print("="*50)
     print(results_df.round(4))
     print("="*50)
-    
-    plot_results(timestamps_train, Y_train, Y_pred_train, std_train_f,
-                 timestamps_test, Y_test, Y_pred_test, std_test_f)
-    
+        
     total_time = time.time() - total_start
     print(f"\nTotal execution time: {total_time:.2f} seconds")
     print("Prediction complete!")
+    # --- PLOTTING ---
+    plot_results(timestamps_train, Y_train, Y_pred_train, std_train_f,
+                 timestamps_test, Y_test, Y_pred_test, std_test_f,
+                 Z_timestamps=Z_timestamps, Z_inflow=Z_inflow)
+
 
 if __name__ == "__main__":
     main()
