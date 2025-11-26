@@ -28,12 +28,12 @@ WWTP_inflow['timestamp'] = pd.to_datetime(WWTP_inflow['timestamp'])
 precipitation['timestamp'] = pd.to_datetime(precipitation['timestamp'])
 
 # train parameters
-train_start_time = pd.to_datetime("2019-01-01 00:00:00")
-train_days = 21  # Number of days for training
+train_start_time = pd.to_datetime("2019-02-01 00:00:00")
+train_days = 90  # Number of days for training
 train_end_time = train_start_time + pd.Timedelta(days=train_days)
 
 # test parameters
-test_hours = 5 * 24  # Hours to predict
+test_hours = 7 * 24  # Hours to predict
 test_end_time = train_end_time + pd.Timedelta(hours=test_hours)
 timeinterval = 15 # minutes 
 
@@ -66,6 +66,8 @@ print(f"Training period: {train_start_time} to {train_end_time} ({train_days} da
 print(f"Test period: {train_end_time} to {test_end_time} ({test_hours} hours)")
 print(f"Training samples: {len(merged_train)}")
 print(f"Test samples: {len(merged_test)}")
+print(f"Data statistics: mean inflow = {merged_train.filter(like='inflow').mean().values[0]:.2f} L/s,\
+      mean precipitation = {merged_train.filter(like='precipitation').mean().values[0]*60*24/timeinterval:.2f} mm/day")
 
 def preparing_data(merged_data, start_time, interval_minutes=timeinterval): 
     #creating multi dimensional input as timestamps and precipitation data
@@ -74,9 +76,9 @@ def preparing_data(merged_data, start_time, interval_minutes=timeinterval):
     precip_col = [col for col in merged_data.columns if 'precipitation' in col.lower()][0]
     
     time_feat = np.array([(ts - start_time).total_seconds() / 60.0 for ts in timestamps]).reshape(-1, 1)  # time in minutes
-    ## I sum up the previous 30 mins precipitation to consider lag effect
-    # Calculate window size dynamically (Target 30 mins / Interval)
-    window_size = int(30 / interval_minutes) 
+    ## I sum up the previous 60 mins precipitation to consider lag effect
+    # Calculate window size dynamically (Target 60 mins / Interval)
+    window_size = int(60 / interval_minutes) 
     if window_size < 1: window_size = 1
     
     rain_series = merged_data[precip_col]
@@ -101,26 +103,26 @@ def build_gpr_model(X_train, Y_train, time_std_dev):
     scaled_period = minutes_in_day / time_std_dev  # Adjust period based on scaling
     print(f"Scaled period for daily cycle: {scaled_period}")
     ### daily kernel 
-    kernel_daily = gpflow.kernels.Periodic(gpflow.kernels.SquaredExponential(active_dims=[0], lengthscales=0.01, variance=1), 
+    kernel_daily = gpflow.kernels.Periodic(gpflow.kernels.SquaredExponential(active_dims=[0], variance=1), 
                                             period=scaled_period)   # daily periodicity
     bounded_transform_daily = tfp.bijectors.Sigmoid(
         low=tf.constant(scaled_period/(24*60), dtype=tf.float64), # at least one minute
         high=tf.constant(scaled_period/3, dtype=tf.float64))    # at most 8 hours 
     kernel_daily.base_kernel.lengthscales = gpflow.Parameter(0.01, transform=bounded_transform_daily)
     ### trend kernel 
-    kernel_long_term = gpflow.kernels.RBF(lengthscales=4.0 * scaled_period, variance=1.0, active_dims=[0])
+    kernel_long_term = gpflow.kernels.RBF(variance=1.0, active_dims=[0])
     bounded_transform_long_term = tfp.bijectors.Sigmoid(
-        low=tf.constant(3.0 * scaled_period, dtype=tf.float64),
-        high=tf.constant(6.0 * scaled_period, dtype=tf.float64))
-    kernel_long_term.lengthscales = gpflow.Parameter(4.0 * scaled_period, transform=bounded_transform_long_term)
+        low=tf.constant(4.0 * scaled_period, dtype=tf.float64),
+        high=tf.constant(8.0 * scaled_period, dtype=tf.float64))
+    kernel_long_term.lengthscales = gpflow.Parameter(7.0 * scaled_period, transform=bounded_transform_long_term)
     ### rain kernel 
-    kernel_rain = gpflow.kernels.Matern12(lengthscales=0.05, variance=1, active_dims=[1])
+    kernel_rain = gpflow.kernels.Matern12(variance=1, active_dims=[1])
     bounded_transform_rain = tfp.bijectors.Sigmoid(
-        low=tf.constant(0.01, dtype=tf.float64), 
-        high=tf.constant(0.1, dtype=tf.float64)) 
-    kernel_rain.lengthscales = gpflow.Parameter(0.05, transform=bounded_transform_rain)
+        low=tf.constant(0.1, dtype=tf.float64), 
+        high=tf.constant(1, dtype=tf.float64)) 
+    kernel_rain.lengthscales = gpflow.Parameter(0.5, transform=bounded_transform_rain)
     ### noise kernel
-    kernel_noise = gpflow.kernels.White(0.01)
+    kernel_noise = gpflow.kernels.White()
     
     kernel_daily.active_dims = [0]
     kernel_long_term.active_dims = [0]
