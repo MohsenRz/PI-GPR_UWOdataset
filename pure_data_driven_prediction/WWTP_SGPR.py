@@ -43,7 +43,7 @@ test_end_time = train_end_time + pd.Timedelta(hours=test_hours)
 timeinterval = 15 # minutes 
 
 # inducing points 
-M = 400  # number of inducing points
+M = 300  # number of inducing points
 
 WWTP_inflow_train = WWTP_inflow[(WWTP_inflow['timestamp'] >= train_start_time) & (WWTP_inflow['timestamp'] <= train_end_time)]
 precipitation_train = precipitation[(precipitation['timestamp'] >= train_start_time) & (precipitation['timestamp'] <= train_end_time)]
@@ -153,6 +153,9 @@ def build_sgpr_model(X_train, Y_train, time_std_dev):
         kernel=kernel, mean_function=None, 
         inducing_variable=Z
         )
+    # freezing the inducing points location for small datasets 
+    gpflow.set_trainable(model.inducing_variable, False)
+    
     #optimise hyperparameters
     opt = gpflow.optimizers.Scipy()
     opt.minimize(model.training_loss, 
@@ -249,7 +252,7 @@ def plot_results(timestamps_train, Y_train, Y_pred_train, std_train,
     plt.show()
     
 def main():
-    total_start = time.time()
+    total_start = time.perf_counter()
     print("="*70)
     print("GPR Model for WWTP Inflow Prediction")
     print("="*70)
@@ -324,12 +327,12 @@ def main():
     print(results_df.round(4))
     print("="*50)
         
-    total_time = time.time() - total_start
+    total_time = time.perf_counter() - total_start
     print(f"\nTotal execution time: {total_time:.2f} seconds")
     print("Prediction complete!")
     # --- PLOTTING ---
-    plot_results(timestamps_train, Y_train, Y_pred_train, std_train_f,
-                 timestamps_test, Y_test, Y_pred_test, std_test_f,
+    plot_results(timestamps_train, Y_train, Y_pred_train, std_train_y,
+                 timestamps_test, Y_test, Y_pred_test, std_test_y,
                  Z_timestamps=Z_timestamps, Z_inflow=Z_inflow)
 
 

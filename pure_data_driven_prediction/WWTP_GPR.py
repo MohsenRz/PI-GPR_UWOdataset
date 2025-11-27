@@ -2,7 +2,7 @@
 making a Gaussian Process Regression model for WWTP data prediction
 sensor data is used 
 Author: Mohsen 
-Date: 26/11/2025
+Date: 27/11/2025
 """
 
 import pandas as pd 
@@ -33,11 +33,11 @@ precipitation['timestamp'] = pd.to_datetime(precipitation['timestamp'])
 
 # train parameters
 train_start_time = pd.to_datetime("2019-02-01 00:00:00")
-train_days = 90  # Number of days for training
+train_days = 30  # Number of days for training
 train_end_time = train_start_time + pd.Timedelta(days=train_days)
 
 # test parameters
-test_hours = 7 * 24  # Hours to predict
+test_hours = 5 * 24  # Hours to predict
 test_end_time = train_end_time + pd.Timedelta(hours=test_hours)
 timeinterval = 15 # minutes 
 
@@ -71,7 +71,7 @@ print(f"Test period: {train_end_time} to {test_end_time} ({test_hours} hours)")
 print(f"Training samples: {len(merged_train)}")
 print(f"Test samples: {len(merged_test)}")
 print(f"Data statistics: mean inflow = {merged_train.filter(like='inflow').mean().values[0]:.2f} L/s,\
-      mean precipitation = {merged_train.filter(like='precipitation').mean().values[0]*60*24/timeinterval:.2f} mm/day")
+      mean precipitation = {merged_train.filter(like='precipitation').mean().values[0]*24/timeinterval:.2f} mm/day")
 
 def preparing_data(merged_data, start_time, interval_minutes=timeinterval): 
     #creating multi dimensional input as timestamps and precipitation data
@@ -134,7 +134,7 @@ def build_gpr_model(X_train, Y_train, time_std_dev):
     
     gpflow.set_trainable(kernel_daily.period, False)
     
-    kernel = kernel_daily * kernel_long_term + kernel_rain + kernel_noise
+    kernel = kernel_daily * kernel_long_term + kernel_rain  # kernel noise is removed because the likelihhod variance takes the overal noise
     
     X_train_tf = tf.convert_to_tensor(X_train, dtype=tf.float64)
     Y_train_tf = tf.convert_to_tensor(Y_train, dtype=tf.float64)
@@ -229,7 +229,7 @@ def plot_results(timestamps_train, Y_train, Y_pred_train, std_train,
     plt.show()
     
 def main():
-    total_start = time.time()
+    total_start = time.perf_counter()
     print("="*70)
     print("GPR Model for WWTP Inflow Prediction")
     print("="*70)
@@ -285,12 +285,14 @@ def main():
     print(results_df.round(4))
     print("="*50)
     
-    plot_results(timestamps_train, Y_train, Y_pred_train, std_train_f,
-                 timestamps_test, Y_test, Y_pred_test, std_test_f)
-    
-    total_time = time.time() - total_start
-    print(f"\nTotal execution time: {total_time:.2f} seconds")
+    total_time = time.perf_counter() - total_start
+    print(f"\nTotal execution time: {total_time:.1f} seconds")
     print("Prediction complete!")
+    #--- PLOTTING ---
+    plot_results(timestamps_train, Y_train, Y_pred_train, std_train_y,
+                 timestamps_test, Y_test, Y_pred_test, std_test_y)
+    
+    
 
 if __name__ == "__main__":
     main()
