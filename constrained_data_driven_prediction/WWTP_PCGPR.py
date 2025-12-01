@@ -1,9 +1,9 @@
 """ 
 making a Gaussian Process Regression model for WWTP data prediction
 sensor data is used 
-sparsification will be applied here using SGPR model from GPflow library
+physical constraints are added to get better performance
 Author: Mohsen 
-Date: 26/11/2025
+Date: 01/12/2025
 """
 
 import pandas as pd 
@@ -14,7 +14,7 @@ import gpflow
 from sklearn.preprocessing import StandardScaler
 import matplotlib.dates as mdates
 import time
-from scipy.cluster.vq import kmeans 
+from scipy.stats import truncnorm
 from pathlib import Path
 import tensorflow_probability as tfp
 
@@ -29,21 +29,18 @@ precipitation = pd.read_pickle(
     data_path / "precipitation" / "sensor_bn_r02_school_chatzenrainstr_2019_cleaned.pkl")
 
 ## Preprocess Data
-WWTP_inflow['timestamp'] = pd.to_datetime(WWTP_inflow['timestamp']) # L/s
-precipitation['timestamp'] = pd.to_datetime(precipitation['timestamp']) # mm/hr
+WWTP_inflow['timestamp'] = pd.to_datetime(WWTP_inflow['timestamp'])
+precipitation['timestamp'] = pd.to_datetime(precipitation['timestamp'])
 
 # train parameters
 train_start_time = pd.to_datetime("2019-02-01 00:00:00")
-train_days = 30  # Number of days for training
+train_days = 9  # Number of days for training
 train_end_time = train_start_time + pd.Timedelta(days=train_days)
 
 # test parameters
 test_hours = 5 * 24  # Hours to predict
 test_end_time = train_end_time + pd.Timedelta(hours=test_hours)
 timeinterval = 15 # minutes 
-
-# inducing points 
-M = 500  # number of inducing points
 
 WWTP_inflow_train = WWTP_inflow[(WWTP_inflow['timestamp'] >= train_start_time) & (WWTP_inflow['timestamp'] <= train_end_time)]
 precipitation_train = precipitation[(precipitation['timestamp'] >= train_start_time) & (precipitation['timestamp'] <= train_end_time)]
@@ -100,9 +97,9 @@ def preparing_data(merged_data, start_time, interval_minutes=timeinterval):
         
     return X_multi, Y, timestamps
 
-def build_sgpr_model(X_train, Y_train, time_std_dev):
+def build_gpr_model(X_train, Y_train, time_std_dev):
     """
-    Build and train sparse GPR model 
+    Build and train GPR model
     X_train: Scaled training data 
     Y_train: Scaled target data
     time_std_dev: the scaling factor (std) of the Time Column from scalara_X.scale_[0]
@@ -116,7 +113,7 @@ def build_sgpr_model(X_train, Y_train, time_std_dev):
     bounded_transform_daily = tfp.bijectors.Sigmoid(
         low=tf.constant(scaled_period/(24*60), dtype=tf.float64), # at least one minute
         high=tf.constant(scaled_period/3, dtype=tf.float64))    # at most 8 hours 
-    kernel_daily.base_kernel.lengthscales = gpflow.Parameter(0.02 * scaled_period, transform=bounded_transform_daily)
+    kernel_daily.base_kernel.lengthscales = gpflow.Parameter(0.01, transform=bounded_transform_daily)
     ### trend kernel 
     kernel_long_term = gpflow.kernels.RBF(variance=1.0, active_dims=[0])
     bounded_transform_long_term = tfp.bijectors.Sigmoid(
@@ -138,24 +135,13 @@ def build_sgpr_model(X_train, Y_train, time_std_dev):
     
     gpflow.set_trainable(kernel_daily.period, False)
     
-    kernel = kernel_daily * kernel_long_term + kernel_rain # noise removed because the likelihood variance takes the overal noise
-    
-    # sparsification 
-    num_inducing = min(M, X_train.shape[0]//2)  # choose number of inducing points
-    Z_init, _ = kmeans(X_train, num_inducing)
-    Z = tf.convert_to_tensor(Z_init, dtype=tf.float64)
+    kernel = kernel_daily * kernel_long_term + kernel_rain  # kernel noise is removed because the likelihhod variance takes the overal noise
     
     X_train_tf = tf.convert_to_tensor(X_train, dtype=tf.float64)
     Y_train_tf = tf.convert_to_tensor(Y_train, dtype=tf.float64)
     
-    model = gpflow.models.SGPR(
-        data=(X_train_tf, Y_train_tf),
-        kernel=kernel, mean_function=None, 
-        inducing_variable=Z
-        )
-    # freezing the inducing points location for small datasets 
-    gpflow.set_trainable(model.inducing_variable, True)
-    
+    model = gpflow.models.GPR(data=(X_train_tf, Y_train_tf), 
+                              kernel=kernel, mean_function=None)
     #optimise hyperparameters
     opt = gpflow.optimizers.Scipy()
     opt.minimize(model.training_loss, 
@@ -166,6 +152,38 @@ def build_sgpr_model(X_train, Y_train, time_std_dev):
     gpflow.utilities.print_summary(model)
  
     return model
+
+def prediction (model, X_scaled, scaler_Y, min_val=None, max_val=None):
+    """
+    Make predictions with the GPR model
+    constraints will be applied here 
+    """
+    X_tf = tf.convert_to_tensor(X_scaled, dtype=tf.float64)
+    mean_sc, var_y_sc = model.predict_y(X_tf)
+    _, var_f_sc = model.predict_f(X_tf)
+    
+    Y_pred = scaler_Y.inverse_transform(mean_sc.numpy())
+    std_y = np.sqrt(var_y_sc.numpy()) * scaler_Y.scale_
+    std_f = np.sqrt(var_f_sc.numpy()) * scaler_Y.scale_
+    
+    if min_val is None and max_val is None:
+        return Y_pred, std_y, std_f
+    
+    # I use truncated Gaussian distribution for the test predictions only 
+    if min_val is not None:
+        a = (min_val - Y_pred) / std_y
+    else: 
+        a = -np.inf
+    
+    if max_val is not None:
+        b = (max_val - Y_pred) / std_y
+    else:
+        b = np.inf
+    
+    Y_pred_constrained = truncnorm.mean(a=a, b=b, loc=Y_pred, scale=std_y)
+    std_y_constrained = truncnorm.std(a=a, b=b, loc=Y_pred, scale=std_y)
+        
+    return Y_pred_constrained, std_y_constrained, std_f
 
 def model_evaluation(Y_true, Y_pred, std_pred):
     """
@@ -197,29 +215,21 @@ def model_evaluation(Y_true, Y_pred, std_pred):
     }
 
 def plot_results(timestamps_train, Y_train, Y_pred_train, std_train,
-                 timestamps_test, Y_test, Y_pred_test, std_test,
-                 Z_timestamps=None, Z_inflow=None):
+                 timestamps_test, Y_test, Y_pred_test, std_test):
     """
-    Plot training and test results with inducing points 
+    Plot training and test results
     """
-    fig, ax = plt.subplots(figsize=(14, 7))
+    fig, ax = plt.subplots(figsize=(12, 6))
     
     # Plot training data
-    ax.scatter(timestamps_train, Y_train.ravel(), c='blue', s=12, 
-               label='Training Data', alpha=0.4, zorder=2)
+    ax.scatter(timestamps_train, Y_train.ravel(), c='blue', s=15, 
+               label='Training Data', alpha=0.5, zorder=3)
     ax.plot(timestamps_train, Y_pred_train.ravel(), 'green', 
             label='GPR Fit (Training)', linewidth=2, zorder=4)
     ax.fill_between(timestamps_train, 
                     Y_pred_train.ravel() - 1.96 * std_train.ravel(),
                     Y_pred_train.ravel() + 1.96 * std_train.ravel(),
                     alpha=0.2, color='green', label='95% CI (Training)', zorder=2)
-    #Plotting Inducing Points 
-    if Z_timestamps is not None:
-        y_min = Y_train.min()
-        ax.plot(Z_timestamps, [y_min]*len(Z_timestamps), '|', c='k', markersize=15, 
-                label='Inducing Points (Z)', zorder=5)
-        #ax.scatter(Z_timestamps, Z_inflow, c='k', marker='x', s=50, 
-        #           linewidth=1.5, label='Inducing Points (Z)', zorder=5)
     
     # Plot test data
     ax.scatter(timestamps_test, Y_test.ravel(), c='orange', s=15,
@@ -231,11 +241,11 @@ def plot_results(timestamps_train, Y_train, Y_pred_train, std_train,
                     Y_pred_test.ravel() + 1.96 * std_test.ravel(),
                     alpha=0.2, color='red', label='95% CI (Test)', zorder=2)
     
-    # vertical line separating train/test
+    # Add vertical line separating train/test
     ax.axvline(x=timestamps_train[-1], color='black', linestyle='--', 
                linewidth=1.5, label='Train/Test Split', zorder=5)
     
-    # Labels and legend
+    # Formatting
     ax.set_xlabel('Date', fontsize=12)
     ax.set_ylabel('WWTP Inflow', fontsize=12)
     ax.set_title(f'GPR: WWTP Inflow Prediction (Train: {train_days} days, Test: {test_hours} hours)', 
@@ -253,7 +263,7 @@ def plot_results(timestamps_train, Y_train, Y_pred_train, std_train,
     
 def main():
     total_start = time.perf_counter()
-    print("="*70)
+    print("="*70) 
     print("GPR Model for WWTP Inflow Prediction")
     print("="*70)
     
@@ -268,74 +278,41 @@ def main():
     
     print("\nTraining GPR model...")
     # Pass Time Std Dev for Period Calculation
-    model = build_sgpr_model(X_train_scaled, Y_train_scaled, scaler_X.scale_[0])
+    model = build_gpr_model(X_train_scaled, Y_train_scaled, scaler_X.scale_[0])
     
     # --- PREDICTION ON TRAIN ---
-    X_train_tf = tf.convert_to_tensor(X_train_scaled, dtype=tf.float64)
-    mean_train_sc, var_train_y_sc = model.predict_y(X_train_tf)
-    _, var_train_f_sc = model.predict_f(X_train_tf)
-    
-    Y_pred_train = scaler_Y.inverse_transform(mean_train_sc.numpy())
-    std_train_y = np.sqrt(var_train_y_sc.numpy()) * scaler_Y.scale_
-    std_train_f = np.sqrt(var_train_f_sc.numpy()) * scaler_Y.scale_
-    
+    Y_pred_train, std_train_y, std_train_f = prediction(model, X_train_scaled, scaler_Y,
+                                                        min_val=None, max_val=None)
+
     # --- PREDICTION ON TEST ---
     X_test, Y_test, timestamps_test = preparing_data(merged_test, train_start_time, timeinterval)
     X_test_scaled = scaler_X.transform(X_test)
     
     print(f"\nGenerating {test_hours}-hour predictions...")
-    X_test_tf = tf.convert_to_tensor(X_test_scaled, dtype=tf.float64)
+    Y_pred_test, std_test_y, std_test_f = prediction(model, X_test_scaled, scaler_Y, 
+                                                     min_val=0.0, max_val=180.0)
     
-    mean_test_sc, var_test_y_sc = model.predict_y(X_test_tf)
-    _, var_test_f_sc = model.predict_f(X_test_tf)
-    
-    Y_pred_test = scaler_Y.inverse_transform(mean_test_sc.numpy())
-    std_test_y = np.sqrt(var_test_y_sc.numpy()) * scaler_Y.scale_
-    std_test_f = np.sqrt(var_test_f_sc.numpy()) * scaler_Y.scale_
-    
-    # --- NEW: EXTRACT INDUCING POINTS FOR PLOTTING ---
-    print("\nExtracting Inducing Points...")
-    
-    # 1. Get Z in Scaled Space (Shape: M x 2)
-    Z_scaled = model.inducing_variable.Z.numpy()
-    
-    # 2. Unscale X-coordinates (Time and Rain)
-    Z_unscaled = scaler_X.inverse_transform(Z_scaled)
-    Z_time_minutes = Z_unscaled[:, 0]
-    
-    # 3. Convert Time-Minutes back to Timestamps
-    # We add the minutes to the train_start_time
-    Z_timestamps = [train_start_time + pd.Timedelta(minutes=float(m)) for m in Z_time_minutes]
-    
-    # 4. Calculate Y-coordinates (Inflow) for these points
-    # We ask the model: "What is the expected inflow at these Z locations?"
-    mu_Z_scaled, _ = model.predict_f(Z_scaled)
-    Z_inflow = scaler_Y.inverse_transform(mu_Z_scaled.numpy())
-    
-    # --- EVALUATION TABLE ---
+    # --- COMPARISON TABLE ---
     train_metrics = model_evaluation(Y_train, Y_pred_train, std_train_y)
     test_metrics = model_evaluation(Y_test, Y_pred_test, std_test_y)
     
     results_df = pd.DataFrame({
         'Training Set': train_metrics,
-        'Test Set': test_metrics
-    })
+        'Test Set': test_metrics})
     
     print("\n" + "="*50)
     print("MODEL PERFORMANCE")
     print("="*50)
     print(results_df.round(4))
     print("="*50)
-        
+    
     total_time = time.perf_counter() - total_start
-    print(f"\nTotal execution time: {total_time:.2f} seconds")
+    print(f"\nTotal execution time: {total_time:.1f} seconds")
     print("Prediction complete!")
-    # --- PLOTTING ---
+    #--- PLOTTING ---
     plot_results(timestamps_train, Y_train, Y_pred_train, std_train_y,
-                 timestamps_test, Y_test, Y_pred_test, std_test_y,
-                 Z_timestamps=Z_timestamps, Z_inflow=Z_inflow)
-
+                 timestamps_test, Y_test, Y_pred_test, std_test_y)
+    
 
 if __name__ == "__main__":
     main()
-
