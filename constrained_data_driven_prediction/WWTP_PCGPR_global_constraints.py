@@ -3,8 +3,9 @@ making a Gaussian Process Regression model for WWTP data prediction
 sensor data is used 
 physical constraints are added to get better performance
 here we have min and max constraints for the WWTP inflow predictions 
+the global constraints are used in this implementation with WARPING method 
 Author: Mohsen 
-Date: 09/12/2025
+Date: 08/12/2025
 """
 
 import pandas as pd 
@@ -18,6 +19,34 @@ import time
 from scipy.stats import truncnorm, norm
 from pathlib import Path
 import tensorflow_probability as tfp
+
+class LogitWarper:
+    """
+    Transforms bounded data [min_val, max_val] to unconstrained real space (-inf, inf)
+    using a Logit transformation, and inverses it using a Sigmoid.
+    """
+    def __init__(self, min_val, max_val, epsilon=1e-5):
+        self.min_val = min_val
+        self.max_val = max_val
+        self.epsilon = epsilon # Prevents log(0)
+        
+    def transform(self, y):
+        """Forward: Physical -> Latent"""
+        # 1. Normalize to [0, 1]
+        y_norm = (y - self.min_val) / (self.max_val - self.min_val)
+        # 2. Clip to avoid exactly 0 or 1
+        y_clamped = np.clip(y_norm, self.epsilon, 1.0 - self.epsilon)
+        # 3. Logit transform
+        y_warped = np.log(y_clamped / (1.0 - y_clamped))
+        return y_warped
+
+    def inverse_transform(self, y_warped):
+        """Inverse: Latent -> Physical"""
+        # 1. Sigmoid
+        y_sigmoid = 1.0 / (1.0 + np.exp(-y_warped))
+        # 2. Scale back to physical units
+        y_physical = self.min_val + (y_sigmoid * (self.max_val - self.min_val))
+        return y_physical
 
 ## Load Data
 BASE = Path(__file__).parent.parent
@@ -109,7 +138,7 @@ def build_gpr_model(X_train, Y_train, time_std_dev):
     time_std_dev: the scaling factor (std) of the Time Column from scalara_X.scale_[0]
     """ 
     minutes_in_day = 24 * 60
-    scaled_period = minutes_in_day / time_std_dev  # Adjust period based on scaling
+    scaled_period = minutes_in_day / time_std_dev  # Adjusting period based on scaling
     print(f"Scaled period for daily cycle: {scaled_period}")
     ### daily kernel 
     kernel_daily = gpflow.kernels.Periodic(gpflow.kernels.SquaredExponential(active_dims=[0], variance=1), 
@@ -157,39 +186,52 @@ def build_gpr_model(X_train, Y_train, time_std_dev):
  
     return model
 
-def prediction (model, X_scaled, scaler_Y, min_val=None, max_val=None):
+# main changes come here 
+def prediction_warped (model, X_scaled, scaler_Y_warped, warper, n_samples=2000):
     """
-    Make predictions with the GPR model
-    constraints will be applied here 
+    Performs predictions by:
+    1. Predicting latent Gaussian distribution (Mean/Var) in warped space.
+    2. Sampling from this latent distribution.
+    3. Inverse warping the samples to physical space.
+    4. Calculating statistics (Mean, CI) on the physical samples.
     """
     X_tf = tf.convert_to_tensor(X_scaled, dtype=tf.float64)
-    mean_sc, var_y_sc = model.predict_y(X_tf)
-    _, var_f_sc = model.predict_f(X_tf)
+    # Predict in the Latent (Warped + Scaled) Space
+    # predict_y includes the likelihood noise, which is correct for predictive intervals
+    mean_lat_scaled, var_lat_scaled = model.predict_y(X_tf)
+    mu_lat = scaler_Y_warped.inverse_transform(mean_lat_scaled.numpy())
+    std_lat = np.sqrt(var_lat_scaled.numpy()) * scaler_Y_warped.scale_
     
-    Y_pred = scaler_Y.inverse_transform(mean_sc.numpy())
-    std_y = np.sqrt(var_y_sc.numpy()) * scaler_Y.scale_
-    std_f = np.sqrt(var_f_sc.numpy()) * scaler_Y.scale_
+    # Monte Carlo Sampling
+    # Shape: (n_samples, n_test_points)
+    rng = np.random.default_rng(42)
+    # We create standard normal samples and scale/shift them
+    z_samples = rng.standard_normal((n_samples, len(X_scaled)))
     
-    if min_val is None and max_val is None:
-        return Y_pred, std_y, std_f
+    # Broadcast mu and std
+    lat_samples = mu_lat.T + (std_lat.T * z_samples)
     
-    # I use truncated Gaussian distribution for the test predictions only 
-    if min_val is not None:
-        a = (min_val - Y_pred) / std_y
-    else: 
-        a = -np.inf
+    # INVERSE WARP: Transform samples back to physical space [0, 180]
+    phys_samples = warper.inverse_transform(lat_samples)
     
-    if max_val is not None:
-        b = (max_val - Y_pred) / std_y
-    else:
-        b = np.inf
+    # Calculate Statistics in Physical Space
+    Y_pred_mean = np.mean(phys_samples, axis=0).reshape(-1, 1)
+    Y_pred_median = np.median(phys_samples, axis=0).reshape(-1, 1)
     
-    Y_pred_constrained = truncnorm.mean(a=a, b=b, loc=Y_pred, scale=std_y)
-    std_y_constrained = truncnorm.std(a=a, b=b, loc=Y_pred, scale=std_y)
-        
-    return Y_pred_constrained, std_y_constrained, std_f
+    # Asymmetric Confidence Intervals (e.g. 95%)
+    lower_ci = np.percentile(phys_samples, 2.5, axis=0).reshape(-1, 1)
+    upper_ci = np.percentile(phys_samples, 97.5, axis=0).reshape(-1, 1)
+    
+    # Std for metric calculation (approximate, since distribution is skewed)
+    std_y = np.std(phys_samples, axis=0).reshape(-1, 1)
+     
+    return Y_pred_mean, std_y, lower_ci, upper_ci, phys_samples
 
-def model_evaluation(Y_true, Y_pred, std_pred):
+############################ to here 
+
+
+
+def model_evaluation(Y_true, Y_pred, lower_ci, upper_ci):
     """
     Returns a dictionary of metrics for easy table formatting.
     """
@@ -199,28 +241,26 @@ def model_evaluation(Y_true, Y_pred, std_pred):
     MAE = np.mean(np.abs(Y_true.ravel() - Y_pred.ravel()))
     
     # Coverage
-    lower_bound = Y_pred.ravel() - 1.96 * std_pred.ravel()
-    upper_bound = Y_pred.ravel() + 1.96 * std_pred.ravel()
-    points_inside = np.sum((Y_true.ravel() >= lower_bound) & 
-                           (Y_true.ravel() <= upper_bound))
+    points_inside = np.sum((Y_true.ravel() >= lower_ci.ravel()) & 
+                           (Y_true.ravel() <= upper_ci.ravel()))
     coverage = points_inside / len(Y_true)
-    
+    """
     # Entropy (Nats)
     variance = std_pred.ravel() ** 2
     # Use log2 for Bits
     entropy_per_point = 0.5 * np.log2(2 * np.pi * np.e * variance)
     mean_entropy = np.mean(entropy_per_point)
-    
+    """
     return {
         "RMSE (L/s)": RMSE,
         "MAE (L/s)": MAE,
         "Coverage (%)": coverage * 100,
-        "Entropy (nats)": mean_entropy
+        #"Entropy (nats)": mean_entropy
     }
 
-def plot_results(timestamps_train, Y_train, Y_pred_train, std_train,
-                 timestamps_test, Y_test, Y_pred_test, std_test,
-                 min_inflow=None, max_inflow=None, sample_date=None):
+def plot_results(timestamps_train, Y_train, Y_pred_train, lower_train, upper_train,
+                 timestamps_test, Y_test, Y_pred_test, lower_test, upper_test,
+                 sample_date=None):
     """
     Plot training and test results
     credible intervals are clipped 
@@ -229,29 +269,20 @@ def plot_results(timestamps_train, Y_train, Y_pred_train, std_train,
     fig, ax = plt.subplots(figsize=(12, 6))
     
     # Plot training data
-    ax.scatter(timestamps_train, Y_train.ravel(), c='blue', s=15, 
-               label='Training Data', alpha=0.5, zorder=3)
+    ax.scatter(timestamps_train, Y_train.ravel(), c='blue', s=10, 
+               label='Training Data', alpha=0.3)
     ax.plot(timestamps_train, Y_pred_train.ravel(), 'green', 
-            label='GPR Fit (Training)', linewidth=2, zorder=4)
-    ax.fill_between(timestamps_train, 
-                    Y_pred_train.ravel() - 1.96 * std_train.ravel(),
-                    Y_pred_train.ravel() + 1.96 * std_train.ravel(),
-                    alpha=0.2, color='green', label='95% CI (Training)', zorder=2)
+            label='Warped GP Fit', linewidth=1.5)
+    ax.fill_between(timestamps_train, lower_train.ravel(), upper_train.ravel(),
+                    alpha=0.2, color='green', label='95% CI (Asymmetric)')
     
     # Plot test data
     ax.scatter(timestamps_test, Y_test.ravel(), c='orange', s=15,
-               label='Test Data (Actual)', alpha=0.7, zorder=3)
+               label='Test Data', alpha=0.6)
     ax.plot(timestamps_test, Y_pred_test.ravel(), 'red', 
-            label='GPR Prediction (Test)', linewidth=2, zorder=4)
-    lower_test = Y_pred_test.ravel() - 1.96 * std_test.ravel()
-    upper_test = Y_pred_test.ravel() + 1.96 * std_test.ravel()
-    if min_inflow is not None:
-        lower_test = np.maximum(lower_test, min_inflow)
-    if max_inflow is not None:
-        upper_test = np.minimum(upper_test, max_inflow)
-    
-    ax.fill_between(timestamps_test, lower_test, upper_test,
-                    alpha=0.2, color='red', label='95% CI (Test)', zorder=2)
+            label='Warped GP Prediction', linewidth=1.5)
+    ax.fill_between(timestamps_test, lower_test.ravel(), upper_test.ravel(),
+                    alpha=0.2, color='red')
     
     # Add vertical line separating train/test
     ax.axvline(x=timestamps_train[-1], color='black', linestyle='--', 
@@ -279,82 +310,47 @@ def plot_results(timestamps_train, Y_train, Y_pred_train, std_train,
     plt.tight_layout()
     plt.show()
 
-def plot_point_of_interest(target_date_str, timestamps, X_scaled, model, 
-                           scaler_Y, min_val=None, max_val=None):
+def plot_point_of_interest(target_date_str, timestamps, phys_samples_matrix):
     """
     Plots the full probability distribution (PDF) for a specific timestamp.
     Visualizes the difference between Raw Mean, Truncated Mean, and Mode.
     """
     target_ts = pd.to_datetime(target_date_str)
-    time_diffs = np.abs(timestamps - target_ts)
-    idx = np.argmin(time_diffs)
+    idx = np.argmin(np.abs(timestamps - target_ts))
     actual_ts = timestamps[idx]
     
-    print(f"\n--- DISTRIBUTION CHECK ---")
-    print(f"Request: {target_ts}")
-    print(f"Plotting Point: {actual_ts}")
-    
-    # Getting Raw Parameters
-    x_input = X_scaled[idx].reshape(1, -1)
-    X_tf = tf.convert_to_tensor(x_input, dtype=tf.float64)
-    mean_sc, var_sc = model.predict_y(X_tf)
-    
-    # Unscale
-    mu_raw = scaler_Y.inverse_transform(mean_sc.numpy())[0][0]
-    sigma_raw = (np.sqrt(var_sc.numpy()) * scaler_Y.scale_)[0][0]
-    
-    # Truncation Bounds (Z-scores)
-    a, b = -np.inf, np.inf
-    if min_val is not None: a = (min_val - mu_raw) / sigma_raw
-    if max_val is not None: b = (max_val - mu_raw) / sigma_raw
-    
-    # MEAN (Center of Mass) - This is what your prediction() function returns
-    mu_truncated = truncnorm.mean(a, b, loc=mu_raw, scale=sigma_raw)
-    
-    # MODE (Highest Peak) - Visually where the curve is highest
-    if mu_raw < (min_val if min_val else -np.inf):
-        mode_truncated = min_val
-    elif mu_raw > (max_val if max_val else np.inf):
-        mode_truncated = max_val
-    else:
-        mode_truncated = mu_raw
- 
-    # x-axis range
-    x_min = mu_raw - 4*sigma_raw
-    if min_val is not None: x_min = min(x_min, min_val - 10)
-    x_max = mu_raw + 4*sigma_raw
-    if max_val is not None: x_max = max(x_max, max_val + 10)
-    
-    x_axis = np.linspace(x_min, x_max, 1000)
-    y_pdf = truncnorm.pdf(x_axis, a, b, loc=mu_raw, scale=sigma_raw)
+    # Get samples for this specific time step
+    # phys_samples matrix is (n_samples, n_timesteps) - wait, from prediction it was (samples, points)
+    # Check transpose in prediction func: lat_samples was (samples, len). Correct.
+    samples_at_t = phys_samples_matrix[:, idx]
     
     fig, ax = plt.subplots(figsize=(10, 6))
     
-    # Plotting Distribution
-    ax.plot(x_axis, y_pdf, 'b-', lw=2, label='Probability Density')
-    ax.fill_between(x_axis, y_pdf, alpha=0.1, color='blue')
+    # Histogram of samples
+    ax.hist(samples_at_t, bins=50, density=True, alpha=0.6, color='skyblue', label='MC Samples')
     
-    # A. Raw Mean (Where the bell curve WANTS to be)
-    ax.axvline(mu_raw, color='red', linestyle=':', linewidth=2, 
-               label=f'Raw Mean ({mu_raw:.1f})')
-    
-    # B. Truncated Mean (Prediction - Center of Mass)
-    ax.axvline(mu_truncated, color='green', linestyle='-', linewidth=2, 
-               label=f'Constrained Prediction ({mu_truncated:.1f})')
-    
-    # Plot Constraints
-    if min_val is not None:
-        ax.axvline(min_val, color='k', linewidth=3, label='Min Constraint')
-    if max_val is not None:
-        ax.axvline(max_val, color='k', linewidth=3, label='Max Constraint')
+    # KDE for smooth line
+    try:
+        density = norm.pdf(np.linspace(min(samples_at_t), max(samples_at_t), 100), 
+                           np.mean(samples_at_t), np.std(samples_at_t))
+        # ax.plot(np.linspace(min(samples_at_t), max(samples_at_t), 100), density, 'b--', label='Gaussian Approx')
+    except: pass
 
-    ax.set_title(f"Prediction Distribution at {actual_ts}", fontsize=14)
-    ax.set_xlabel("Inflow (L/s)", fontsize=12)
-    ax.set_ylabel("Probability", fontsize=12)
+    mean_val = np.mean(samples_at_t)
+    median_val = np.median(samples_at_t)
+    
+    ax.axvline(mean_val, color='red', linestyle='-', lw=2, label=f'Mean: {mean_val:.1f}')
+    ax.axvline(median_val, color='green', linestyle='--', lw=2, label=f'Median: {median_val:.1f}')
+    
+    # Constraints
+    ax.axvline(MIN_INFLOW, color='k', lw=3, label='Min Constraint')
+    ax.axvline(MAX_INFLOW, color='k', lw=3, label='Max Constraint')
+    
+    ax.set_title(f"Predictive Distribution at {actual_ts}\n(Note non-Gaussian skew near bounds)", fontsize=14)
+    ax.set_xlabel("Inflow (L/s)")
+    ax.set_ylabel("Density")
     ax.legend()
     ax.grid(True, alpha=0.3)
-    
-    plt.tight_layout()
     plt.show()
 
 def main():
@@ -365,6 +361,12 @@ def main():
     
     # Prepare training data (Pass interval to calc window size)
     X_train, Y_train, timestamps_train = preparing_data(merged_train, train_start_time, timeinterval)
+    range_val = max_inflow - min_inflow
+    warp = tfp.bijectors.Chain([
+        tfp.bijectors.AffineScalar(shift=-min_inflow),
+        tfp.bijectors.Scale(scale=1.0 / range_val),
+        tfp.bijectors.Sigmoid()
+    ])
     
     # Standardize
     scaler_X = StandardScaler()
