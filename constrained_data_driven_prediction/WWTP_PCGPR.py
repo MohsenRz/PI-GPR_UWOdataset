@@ -207,7 +207,6 @@ def model_evaluation(Y_true, Y_pred, std_pred):
     
     # Entropy (Nats)
     variance = std_pred.ravel() ** 2
-    # Use log2 for Bits
     entropy_per_point = 0.5 * np.log2(2 * np.pi * np.e * variance)
     mean_entropy = np.mean(entropy_per_point)
     
@@ -229,20 +228,20 @@ def plot_results(timestamps_train, Y_train, Y_pred_train, std_train,
     fig, ax = plt.subplots(figsize=(12, 6))
     
     # Plot training data
-    ax.scatter(timestamps_train, Y_train.ravel(), c='blue', s=15, 
-               label='Training Data', alpha=0.5, zorder=3)
+    ax.scatter(timestamps_train, Y_train.ravel(), c='blue', s=10, 
+               label='Training Data', alpha=0.3)
     ax.plot(timestamps_train, Y_pred_train.ravel(), 'green', 
-            label='GPR Fit (Training)', linewidth=2, zorder=4)
+            label='GPR Fit (Training)', linewidth=1.5)
     ax.fill_between(timestamps_train, 
                     Y_pred_train.ravel() - 1.96 * std_train.ravel(),
                     Y_pred_train.ravel() + 1.96 * std_train.ravel(),
-                    alpha=0.2, color='green', label='95% CI (Training)', zorder=2)
+                    alpha=0.2, color='green', label='95% CI (Training)')
     
     # Plot test data
     ax.scatter(timestamps_test, Y_test.ravel(), c='orange', s=15,
-               label='Test Data (Actual)', alpha=0.7, zorder=3)
+               label='Test Data (Actual)', alpha=0.6)
     ax.plot(timestamps_test, Y_pred_test.ravel(), 'red', 
-            label='GPR Prediction (Test)', linewidth=2, zorder=4)
+            label='GPR Prediction (Test)', linewidth=1.5)
     lower_test = Y_pred_test.ravel() - 1.96 * std_test.ravel()
     upper_test = Y_pred_test.ravel() + 1.96 * std_test.ravel()
     if min_inflow is not None:
@@ -251,7 +250,7 @@ def plot_results(timestamps_train, Y_train, Y_pred_train, std_train,
         upper_test = np.minimum(upper_test, max_inflow)
     
     ax.fill_between(timestamps_test, lower_test, upper_test,
-                    alpha=0.2, color='red', label='95% CI (Test)', zorder=2)
+                    alpha=0.2, color='red', label='95% CI (Test)')
     
     # Add vertical line separating train/test
     ax.axvline(x=timestamps_train[-1], color='black', linestyle='--', 
@@ -289,9 +288,7 @@ def plot_point_of_interest(target_date_str, timestamps, X_scaled, model,
     time_diffs = np.abs(timestamps - target_ts)
     idx = np.argmin(time_diffs)
     actual_ts = timestamps[idx]
-    
-    print(f"\n--- DISTRIBUTION CHECK ---")
-    print(f"Request: {target_ts}")
+
     print(f"Plotting Point: {actual_ts}")
     
     # Getting Raw Parameters
