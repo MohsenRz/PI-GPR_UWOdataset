@@ -3,11 +3,10 @@ Gaussian Process Regression model for WWTP data prediction with Global Warping
 - Sensor data is used 
 - Physical constraints (0 to 180) are enforced globally via Warping (Logit Transform)
 - Training is performed in the unconstrained latent space
-- Predictions use Monte Carlo integration to recover the mean and asymmetric CIs
+- Predictions use Gauss-Hermite quadrature to get the unscaled physical mean and variance
 Author: Mohsen
-Date: 10/12/2025
+Date: 15/12/2025
 """
-
 import pandas as pd 
 import numpy as np
 import matplotlib.pyplot as plt
@@ -19,6 +18,7 @@ import time
 from pathlib import Path
 from scipy.stats import norm
 import tensorflow_probability as tfp
+from numpy.polynomial.hermite import hermgauss
 
 # Warping ============================
 class LogitWarper:
@@ -70,7 +70,7 @@ train_days = 30 # days
 train_end_time = train_start_time + pd.Timedelta(days=train_days)
 
 # test parameters
-test_hours = 5 * 24     # hours 
+test_hours = 5 * 24  # hours 
 test_end_time = train_end_time + pd.Timedelta(hours=test_hours)
 timeinterval = 15 # minutes 
 
@@ -185,13 +185,10 @@ def build_gpr_model(X_train, Y_train, time_std_dev):
  
     return model
 
-def prediction_warped(model, X_scaled, scaler_Y_warped, warper, n_samples=5000):
+def prediction_warped(model, X_scaled, scaler_Y_warped, warper):
     """
-    Performs predictions by:
-    1. Predicting latent Gaussian distribution (Mean/Var) in warped space.
-    2. Sampling from this latent distribution.
-    3. Inverse warping the samples to physical space.
-    4. Calculating statistics (Mean, CI) on the physical samples.
+    Performs predictions using Gauss-Hermite quadrature for moments (mean/Var) and Quantile mapping for CI.
+    n_quad (int): number of quadrature points.
     """
     X_tf = tf.convert_to_tensor(X_scaled, dtype=tf.float64)
     
@@ -203,30 +200,42 @@ def prediction_warped(model, X_scaled, scaler_Y_warped, warper, n_samples=5000):
     mu_lat = scaler_Y_warped.inverse_transform(mean_lat_scaled.numpy())
     std_lat = np.sqrt(var_lat_scaled.numpy()) * scaler_Y_warped.scale_
     
-    # Monte Carlo Sampling
-    # Shape: (n_samples, n_test_points)
-    rng = np.random.default_rng(42)
-    # We create standard normal samples and scale them
-    z_samples = rng.standard_normal((n_samples, len(X_scaled)))
-    
+    # Gauss-Hermite Quadrature for mean and variance 
+    # weights (2) and roots (x) 
+    n_quad = 30 
+    x_GH, w_GH = hermgauss(n_quad)   
     # Broadcast mu and std
-    lat_samples = mu_lat.T + (std_lat.T * z_samples)
+    x_GH = x_GH.reshape(-1, 1)  # (n_quad, 1)
+    mu_lat_T = mu_lat.T  # (1, n_points)
+    std_lat_T = std_lat.T  # (1, n_points)
     
-    # INVERSE WARP: Transform samples back to physical space [0, 180]
-    phys_samples = warper.inverse_transform(lat_samples)
+    # change of variables: z = mu + sqrt(2)*sigma*x 
+    f_grid = mu_lat_T + np.sqrt(2) * std_lat_T * x_GH  # (n_quad, n_points)
     
-    # Calculate Statistics in Physical Space
-    Y_pred_mean = np.mean(phys_samples, axis=0).reshape(-1, 1)
-    Y_pred_median = np.median(phys_samples, axis=0).reshape(-1, 1)
+    # Transform to Physical Space
+    phys_grid = warper.inverse_transform(f_grid)  # (n_quad, n_points)
     
-    # Asymmetric Confidence Intervals (e.g. 95%)
-    lower_ci = np.percentile(phys_samples, 2.5, axis=0).reshape(-1, 1)
-    upper_ci = np.percentile(phys_samples, 97.5, axis=0).reshape(-1, 1)
+    # Integration: E[y] = (1/sqrt(phi)) * sum(w_i * y_i)
+    factor = 1.0 / np.sqrt(np.pi)
+    Y_pred_mean = factor * np.sum(w_GH.reshape(-1, 1) * phys_grid, axis=0).reshape(-1, 1)
     
-    # Std for metric calculation (approximate, since distribution is skewed)
-    std_y = np.std(phys_samples, axis=0).reshape(-1, 1)
-        
-    return Y_pred_mean, std_y, lower_ci, upper_ci, phys_samples
+    # Integrating for E[y^2]
+    Y_pred_sq_mean = factor * np.sum(w_GH.reshape(-1, 1) * (phys_grid**2), axis=0).reshape(-1, 1)
+    
+    # variance = E[y^2] - (E[y])^2
+    Y_pred_var = Y_pred_sq_mean - (Y_pred_mean ** 2)
+    Y_pred_std = np.sqrt(np.maximum(Y_pred_var, 1e-10))  # Prevent negative variance due to numerical issues
+    
+    # Quantile mapping for CIs 
+    lat_lower = mu_lat - 1.96 * std_lat
+    lat_upper = mu_lat + 1.96 * std_lat
+    
+    # transform to physical space 
+    lower_ci = warper.inverse_transform(lat_lower)
+    upper_ci = warper.inverse_transform(lat_upper)
+    
+    
+    return Y_pred_mean, Y_pred_std, lower_ci, upper_ci
 
 def model_evaluation(Y_true, Y_pred, lower_ci, upper_ci):
     """
@@ -284,33 +293,41 @@ def plot_results(timestamps_train, Y_train, Y_pred_train, lower_train, upper_tra
     plt.tight_layout()
     plt.show()
 
-def plot_warped_distribution(target_date_str, timestamps, phys_samples_matrix):
+def plot_warped_distribution(target_date_str, timestamps, 
+                             X_scaled, model, scaler_Y_warped, warper):
     """
-    Plots the histogram of the predicted samples to show the skewness
+    Generates a local histogram for a specific point without MC sampling. 
     """
     target_ts = pd.to_datetime(target_date_str)
-    idx = np.argmin(np.abs(timestamps - target_ts))
+    # Find index
+    diffs = np.abs(timestamps - target_ts)
+    idx = np.argmin(diffs)
     actual_ts = timestamps[idx]
     
-    # Get samples for this specific time step
-    # phys_samples matrix is (n_samples, n_timesteps) - wait, from prediction it was (samples, points)
-    # Check transpose in prediction func: lat_samples was (samples, len). Correct.
-    samples_at_t = phys_samples_matrix[:, idx]
+    print(f"\n--- DISTRIBUTION PLOT ---")
+    print(f"Target: {target_ts}, Actual: {actual_ts}")
     
+    # 1. Get Latent Prediction for this specific point
+    x_input = X_scaled[idx].reshape(1, -1)
+    mean_lat_sc, var_lat_sc = model.predict_y(x_input)
+    
+    # 2. Unscale Latent parameters
+    mu_lat = scaler_Y_warped.inverse_transform(mean_lat_sc.numpy())[0][0]
+    std_lat = (np.sqrt(var_lat_sc.numpy()) * scaler_Y_warped.scale_)[0][0]
+    
+    # 3. Generate local samples for visualization (Latent -> Physical)
+    rng = np.random.default_rng(42)
+    lat_samples = rng.normal(mu_lat, std_lat, 10000)
+    phys_samples = warper.inverse_transform(lat_samples)
+    
+    # 4. Plot
     fig, ax = plt.subplots(figsize=(10, 6))
     
     # Histogram of samples
-    ax.hist(samples_at_t, bins=50, density=True, alpha=0.6, color='skyblue', label='MC Samples')
+    ax.hist(phys_samples, bins=50, density=True, alpha=0.6, color='skyblue', label='Predictive Dist.')
     
-    # KDE for smooth line
-    try:
-        density = norm.pdf(np.linspace(min(samples_at_t), max(samples_at_t), 100), 
-                           np.mean(samples_at_t), np.std(samples_at_t))
-        # ax.plot(np.linspace(min(samples_at_t), max(samples_at_t), 100), density, 'b--', label='Gaussian Approx')
-    except: pass
-
-    mean_val = np.mean(samples_at_t)
-    median_val = np.median(samples_at_t)
+    mean_val = np.mean(phys_samples)
+    median_val = np.median(phys_samples)
     
     ax.axvline(mean_val, color='red', linestyle='-', lw=2, label=f'Mean: {mean_val:.1f}')
     ax.axvline(median_val, color='green', linestyle='--', lw=2, label=f'Median: {median_val:.1f}')
@@ -319,7 +336,7 @@ def plot_warped_distribution(target_date_str, timestamps, phys_samples_matrix):
     ax.axvline(MIN_INFLOW, color='k', lw=3, label='Min Constraint')
     ax.axvline(MAX_INFLOW, color='k', lw=3, label='Max Constraint')
     
-    ax.set_title(f"Predictive Distribution at {actual_ts}", fontsize=14)
+    ax.set_title(f"Predictive Distribution at {actual_ts}\n(Non-Gaussian Skew)", fontsize=14)
     ax.set_xlabel("Inflow (L/s)")
     ax.set_ylabel("Density")
     ax.legend()
@@ -333,10 +350,10 @@ def main():
     print("WARPED Gaussian Process for WWTP Inflow Prediction")
     print("="*70)
     
-    # 1. Prepare Data
+    # Prepare Data
     X_train, Y_train_phys, timestamps_train = preparing_data(merged_train, train_start_time, timeinterval)
     
-    # 2. WARPING (Global Constraints)
+    # WARPING 
     # Transform Physical Y (0-180) -> Latent Y (-inf, inf)
     warper = LogitWarper(min_val=MIN_INFLOW, max_val=MAX_INFLOW)
     Y_train_warped = warper.transform(Y_train_phys)
@@ -345,31 +362,31 @@ def main():
     print(f"Physical range: {Y_train_phys.min():.2f} to {Y_train_phys.max():.2f}")
     print(f"Warped range:   {Y_train_warped.min():.2f} to {Y_train_warped.max():.2f}")
     
-    # 3. Standard Scaling (On top of warped data for numerical stability)
+    # Standard Scaling (On top of warped data for numerical stability)
     scaler_X = StandardScaler()
     scaler_Y_warped = StandardScaler() # Scales the Warped Y
     
     X_train_scaled = scaler_X.fit_transform(X_train)
     Y_train_final = scaler_Y_warped.fit_transform(Y_train_warped)
     
-    # 4. Train Model
+    # Training Model
     print("\nTraining GPR model on Warped Space...")
     model = build_gpr_model(X_train_scaled, Y_train_final, scaler_X.scale_[0])
     
-    # 5. Prediction (Train)
+    # Prediction (Train)
     print("Predicting on Training set...")
-    Y_pred_train, _, lower_train, upper_train, _ = prediction_warped(
+    Y_pred_train, _, lower_train, upper_train = prediction_warped(
         model, X_train_scaled, scaler_Y_warped, warper)
     
-    # 6. Prediction (Test)
+    # Prediction (Test)
     X_test, Y_test_phys, timestamps_test = preparing_data(merged_test, train_start_time, timeinterval)
     X_test_scaled = scaler_X.transform(X_test)
     
-    print(f"\nGenerating {test_hours}-hour predictions (with MC integration)...")
-    Y_pred_test, std_test, lower_test, upper_test, samples_test = prediction_warped(
+    print(f"\nGenerating {test_hours}-hour predictions ...")
+    Y_pred_test, std_test, lower_test, upper_test = prediction_warped(
         model, X_test_scaled, scaler_Y_warped, warper)
     
-    # 7. Evaluation
+    # Evaluation
     train_metrics = model_evaluation(Y_train_phys, Y_pred_train, lower_train, upper_train)
     test_metrics = model_evaluation(Y_test_phys, Y_pred_test, lower_test, upper_test)
     
@@ -393,7 +410,8 @@ def main():
                  timestamps_test, Y_test_phys, Y_pred_test, lower_test, upper_test,
                  sample_date=sample_date)
     
-    plot_warped_distribution(sample_date, timestamps_test, samples_test)
+    plot_warped_distribution(sample_date, timestamps_test, X_test_scaled,
+                             model, scaler_Y_warped, warper)
 
 if __name__ == "__main__":
     main()

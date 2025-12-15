@@ -2,9 +2,10 @@
 making a Gaussian Process Regression model for WWTP data prediction
 sensor data is used 
 physical constraints are added to get better performance
-here we have min and max constraints for the WWTP inflow predictions 
+here we have min and max constraints for the WWTP inflow predictions
+Truncated Gaussian  
 Author: Mohsen 
-Date: 09/12/2025
+Date: 15/12/2025
 """
 
 import pandas as pd 
