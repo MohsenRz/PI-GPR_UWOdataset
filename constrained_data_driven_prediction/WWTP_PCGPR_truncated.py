@@ -118,7 +118,7 @@ def build_gpr_model(X_train, Y_train, time_std_dev):
     bounded_transform_daily = tfp.bijectors.Sigmoid(
         low=tf.constant(scaled_period/(24*60), dtype=tf.float64), # at least one minute
         high=tf.constant(scaled_period/3, dtype=tf.float64))    # at most 8 hours 
-    kernel_daily.base_kernel.lengthscales = gpflow.Parameter(0.01, transform=bounded_transform_daily)
+    kernel_daily.base_kernel.lengthscales = gpflow.Parameter(0.02*scaled_period, transform=bounded_transform_daily)
     ### trend kernel 
     kernel_long_term = gpflow.kernels.RBF(variance=1.0, active_dims=[0])
     bounded_transform_long_term = tfp.bijectors.Sigmoid(

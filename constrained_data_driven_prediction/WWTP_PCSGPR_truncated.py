@@ -1,9 +1,10 @@
 """ 
 making a Gaussian Process Regression model for WWTP data prediction
 sensor data is used 
-sparsification will be applied here using SGPR model from GPflow library
+sparsification is applied here using SGPR model from GPflow library
+Truncated Gaussian output is applied to ensure the flow doesn't pass 0 or 180 L/s 
 Author: Mohsen 
-Date: 26/11/2025
+Date: 17/12/2025
 """
 
 import pandas as pd 
@@ -15,6 +16,7 @@ from sklearn.preprocessing import StandardScaler
 import matplotlib.dates as mdates
 import time
 from scipy.cluster.vq import kmeans 
+from scipy.stats import truncnorm
 from pathlib import Path
 import tensorflow_probability as tfp
 
@@ -42,8 +44,12 @@ test_hours = 5 * 24  # Hours to predict
 test_end_time = train_end_time + pd.Timedelta(hours=test_hours)
 timeinterval = 15 # minutes 
 
+# constraints 
+min_inflow = 0.0  # Minimum WWTP inflow (L/s)
+max_inflow = 180.0  # Maximum WWTP inflow (L/s) based on the throttle setting
+
 # inducing points 
-M = 500  # number of inducing points
+M = 250  # number of inducing points
 
 WWTP_inflow_train = WWTP_inflow[(WWTP_inflow['timestamp'] >= train_start_time) & (WWTP_inflow['timestamp'] <= train_end_time)]
 precipitation_train = precipitation[(precipitation['timestamp'] >= train_start_time) & (precipitation['timestamp'] <= train_end_time)]
@@ -167,6 +173,37 @@ def build_sgpr_model(X_train, Y_train, time_std_dev):
  
     return model
 
+def prediction(model, X_scaled, scaler_Y, min_val=None, max_val=None):
+    """
+    making oredictions considering constraints 
+    """
+    X_tf = tf.convert_to_tensor(X_scaled, dtype=tf.float64)
+    mean_sc, var_y_sc = model.predict_y(X_tf)
+    _, var_f_sc = model.predict_f(X_tf)
+    
+    Y_pred = scaler_Y.inverse_transform(mean_sc.numpy())
+    std_y = np.sqrt(var_y_sc.numpy()) * scaler_Y.scale_
+    std_f = np.sqrt(var_f_sc.numpy()) * scaler_Y.scale_
+    
+    if min_val is None and max_val is None:
+        return Y_pred, std_y, std_f
+    
+    # I use truncated Gaussian distribution for the test predictions only 
+    if min_val is not None:
+        a = (min_val - Y_pred) / std_y
+    else: 
+        a = -np.inf
+    
+    if max_val is not None:
+        b = (max_val - Y_pred) / std_y
+    else:
+        b = np.inf
+    
+    Y_pred_constrained = truncnorm.mean(a=a, b=b, loc=Y_pred, scale=std_y)
+    std_y_constrained = truncnorm.std(a=a, b=b, loc=Y_pred, scale=std_y)
+        
+    return Y_pred_constrained, std_y_constrained, std_f
+    
 def model_evaluation(Y_true, Y_pred, std_pred):
     """
     Returns a dictionary of metrics for easy table formatting.
@@ -179,6 +216,8 @@ def model_evaluation(Y_true, Y_pred, std_pred):
     # Coverage
     lower_bound = Y_pred.ravel() - 1.96 * std_pred.ravel()
     upper_bound = Y_pred.ravel() + 1.96 * std_pred.ravel()
+    lower_bound = np.maximum(lower_bound, 0.0)  # enforce min constraint
+    upper_bound = np.minimum(upper_bound, 180.0)  # enforce max constraint
     points_inside = np.sum((Y_true.ravel() >= lower_bound) & 
                            (Y_true.ravel() <= upper_bound))
     coverage = points_inside / len(Y_true)
@@ -198,21 +237,24 @@ def model_evaluation(Y_true, Y_pred, std_pred):
 
 def plot_results(timestamps_train, Y_train, Y_pred_train, std_train,
                  timestamps_test, Y_test, Y_pred_test, std_test,
-                 Z_timestamps=None, Z_inflow=None):
+                 Z_timestamps=None, Z_inflow=None, 
+                 min_inflow=None, max_inflow=None, sample_date=None):
     """
     Plot training and test results with inducing points 
+    point of interest is shown on the plot, if defined 
     """
-    fig, ax = plt.subplots(figsize=(14, 7))
+    fig, ax = plt.subplots(figsize=(12, 6))
     
     # Plot training data
-    ax.scatter(timestamps_train, Y_train.ravel(), c='blue', s=12, 
-               label='Training Data', alpha=0.4, zorder=2)
+    ax.scatter(timestamps_train, Y_train.ravel(), c='blue', s=10, 
+               label='Training Data', alpha=0.3)
     ax.plot(timestamps_train, Y_pred_train.ravel(), 'green', 
-            label='GPR Fit (Training)', linewidth=2, zorder=4)
+            label='GPR Fit (Training)', linewidth=1.5)
     ax.fill_between(timestamps_train, 
                     Y_pred_train.ravel() - 1.96 * std_train.ravel(),
                     Y_pred_train.ravel() + 1.96 * std_train.ravel(),
-                    alpha=0.2, color='green', label='95% CI (Training)', zorder=2)
+                    alpha=0.2, color='green', label='95% CI (Training)')
+    
     #Plotting Inducing Points 
     if Z_timestamps is not None:
         y_min = Y_train.min()
@@ -223,22 +265,32 @@ def plot_results(timestamps_train, Y_train, Y_pred_train, std_train,
     
     # Plot test data
     ax.scatter(timestamps_test, Y_test.ravel(), c='orange', s=15,
-               label='Test Data (Actual)', alpha=0.7, zorder=3)
+               label='Test Data (Actual)', alpha=0.6)
     ax.plot(timestamps_test, Y_pred_test.ravel(), 'red', 
-            label='GPR Prediction (Test)', linewidth=2, zorder=4)
-    ax.fill_between(timestamps_test,
-                    Y_pred_test.ravel() - 1.96 * std_test.ravel(),
-                    Y_pred_test.ravel() + 1.96 * std_test.ravel(),
-                    alpha=0.2, color='red', label='95% CI (Test)', zorder=2)
+            label='GPR Prediction (Test)', linewidth=1.5)
+    lower_test = Y_pred_test.ravel() - 1.96 * std_test.ravel()
+    upper_test = Y_pred_test.ravel() + 1.96 * std_test.ravel()
+    if min_inflow is not None:
+        lower_test = np.maximum(lower_test, min_inflow)
+    if max_inflow is not None:
+        upper_test = np.minimum(upper_test, max_inflow)
+    ax.fill_between(timestamps_test, lower_test, upper_test,
+                    alpha=0.2, color='red', label='95% CI (Test)')
     
     # vertical line separating train/test
     ax.axvline(x=timestamps_train[-1], color='black', linestyle='--', 
                linewidth=1.5, label='Train/Test Split', zorder=5)
     
+    # vertical line showing the sample date
+    if sample_date is not None:
+        sample_ts = pd.to_datetime(sample_date)
+        ax.axvline(x=sample_ts, color='purple', linestyle=':', 
+                   linewidth=1.5, label='Point of Interest', zorder=5)
+    
     # Labels and legend
     ax.set_xlabel('Date', fontsize=12)
     ax.set_ylabel('WWTP Inflow', fontsize=12)
-    ax.set_title(f'GPR: WWTP Inflow Prediction (Train: {train_days} days, Test: {test_hours} hours)', 
+    ax.set_title(f'Sparse GPR: WWTP Inflow Prediction (Train: {train_days} days, Test: {test_hours} hours)', 
                  fontsize=14)
     ax.legend(fontsize=11, loc='best')
     ax.grid(True, alpha=0.3)
@@ -250,7 +302,94 @@ def plot_results(timestamps_train, Y_train, Y_pred_train, std_train,
     
     plt.tight_layout()
     plt.show()
+
+def plot_point_of_interest(target_date_str, timestamps, X_scaled, model, 
+                           scaler_Y, Y_actual=None, min_val=None, max_val=None): 
+    """
+    Plots the full probability distribution (PDF) for a specific timestamp.
+    Visualizes the difference between Raw Mean, Truncated Mean, and Mode.
+    Also shows the actual sensor value and its position in the distribution.
+    """
+    target_ts = pd.to_datetime(target_date_str)
+    time_diffs = np.abs(timestamps - target_ts)
+    idx = np.argmin(time_diffs)
+    actual_ts = timestamps[idx]
+
+    print(f"Plotting Point: {actual_ts}")
     
+    # Getting Raw Parameters
+    x_input = X_scaled[idx].reshape(1, -1)
+    X_tf = tf.convert_to_tensor(x_input, dtype=tf.float64)
+    mean_sc, var_sc = model.predict_y(X_tf)
+    
+    # Unscale
+    mu_raw = scaler_Y.inverse_transform(mean_sc.numpy())[0][0]
+    sigma_raw = (np.sqrt(var_sc.numpy()) * scaler_Y.scale_)[0][0]
+    
+    # Truncation Bounds (Z-scores)
+    a, b = -np.inf, np.inf
+    if min_val is not None: a = (min_val - mu_raw) / sigma_raw
+    if max_val is not None: b = (max_val - mu_raw) / sigma_raw
+    
+    # MEAN (Center of Mass) - This is what your prediction() function returns
+    mu_truncated = truncnorm.mean(a, b, loc=mu_raw, scale=sigma_raw)
+    
+    # MODE (Highest Peak) - Visually where the curve is highest
+    if mu_raw < (min_val if min_val else -np.inf):
+        mode_truncated = min_val
+    elif mu_raw > (max_val if max_val else np.inf):
+        mode_truncated = max_val
+    else:
+        mode_truncated = mu_raw
+        
+    # x-axis range
+    x_min = mu_raw - 4*sigma_raw
+    if min_val is not None: x_min = min(x_min, min_val - 10)
+    x_max = mu_raw + 4*sigma_raw
+    if max_val is not None: x_max = max(x_max, max_val + 10)
+    
+    x_axis = np.linspace(x_min, x_max, 1000)
+    y_pdf = truncnorm.pdf(x_axis, a, b, loc=mu_raw, scale=sigma_raw)
+    
+    fig, ax = plt.subplots(figsize=(10, 6))
+    ax.plot(x_axis, y_pdf, 'b-', lw=2, label='Probability Density')
+    ax.fill_between(x_axis, y_pdf, alpha=0.1, color='blue')
+    
+    # A. Raw Mean (Where the bell curve WANTS to be)
+    ax.axvline(mu_raw, color='red', linestyle=':', linewidth=2, 
+               label=f'Raw Mean ({mu_raw:.1f})')
+    
+    # B. Truncated Mean (Prediction - Center of Mass)
+    ax.axvline(mu_truncated, color='green', linestyle='-', linewidth=2, 
+               label=f'Constrained Prediction ({mu_truncated:.1f})')
+    
+    # C. Actual Sensor Value (if provided)
+    if Y_actual is not None:
+        actual_value = Y_actual[idx]
+        # Handle numpy array by converting to scalar
+        if isinstance(actual_value, np.ndarray):
+            actual_value = actual_value.item() if actual_value.size == 1 else actual_value[0]
+        # Calculate the PDF value at the actual point
+        pdf_at_actual = truncnorm.pdf(actual_value, a, b, loc=mu_raw, scale=sigma_raw)
+        ax.plot(actual_value, pdf_at_actual, 'o', color='orange', markersize=12, 
+                label=f'Actual Sensor Value ({actual_value:.1f})', zorder=5, markeredgewidth=2, 
+                markeredgecolor='darkorange')
+    
+    # Plot Constraints
+    if min_val is not None:
+        ax.axvline(min_val, color='k', linewidth=3, label='Min Constraint')
+    if max_val is not None:
+        ax.axvline(max_val, color='k', linewidth=3, label='Max Constraint')
+    
+    ax.set_title(f"Prediction Distribution at {actual_ts}", fontsize=14)
+    ax.set_xlabel("Inflow (L/s)", fontsize=12)
+    ax.set_ylabel("Probability", fontsize=12)
+    ax.legend()
+    ax.grid(True, alpha=0.3)
+    
+    plt.tight_layout()
+    plt.show()
+     
 def main():
     total_start = time.perf_counter()
     print("="*70)
@@ -271,28 +410,17 @@ def main():
     model = build_sgpr_model(X_train_scaled, Y_train_scaled, scaler_X.scale_[0])
     
     # --- PREDICTION ON TRAIN ---
-    X_train_tf = tf.convert_to_tensor(X_train_scaled, dtype=tf.float64)
-    mean_train_sc, var_train_y_sc = model.predict_y(X_train_tf)
-    _, var_train_f_sc = model.predict_f(X_train_tf)
-    
-    Y_pred_train = scaler_Y.inverse_transform(mean_train_sc.numpy())
-    std_train_y = np.sqrt(var_train_y_sc.numpy()) * scaler_Y.scale_
-    std_train_f = np.sqrt(var_train_f_sc.numpy()) * scaler_Y.scale_
+    Y_pred_train, std_train_y, std_train_f = prediction(model, X_train_scaled, scaler_Y, 
+                                                         min_val=None, max_val=None)
     
     # --- PREDICTION ON TEST ---
     X_test, Y_test, timestamps_test = preparing_data(merged_test, train_start_time, timeinterval)
     X_test_scaled = scaler_X.transform(X_test)
     
     print(f"\nGenerating {test_hours}-hour predictions...")
-    X_test_tf = tf.convert_to_tensor(X_test_scaled, dtype=tf.float64)
-    
-    mean_test_sc, var_test_y_sc = model.predict_y(X_test_tf)
-    _, var_test_f_sc = model.predict_f(X_test_tf)
-    
-    Y_pred_test = scaler_Y.inverse_transform(mean_test_sc.numpy())
-    std_test_y = np.sqrt(var_test_y_sc.numpy()) * scaler_Y.scale_
-    std_test_f = np.sqrt(var_test_f_sc.numpy()) * scaler_Y.scale_
-    
+    Y_pred_test, std_test_y, std_test_f = prediction(model, X_test_scaled, scaler_Y, 
+                                                     min_val=min_inflow, max_val=max_inflow)
+        
     # --- NEW: EXTRACT INDUCING POINTS FOR PLOTTING ---
     print("\nExtracting Inducing Points...")
     
@@ -331,10 +459,15 @@ def main():
     print(f"\nTotal execution time: {total_time:.2f} seconds")
     print("Prediction complete!")
     # --- PLOTTING ---
+    sample_date = str(train_end_time + pd.Timedelta(hours=24))  # it shows the 24th hour of the predictions 
+
     plot_results(timestamps_train, Y_train, Y_pred_train, std_train_y,
                  timestamps_test, Y_test, Y_pred_test, std_test_y,
-                 Z_timestamps=Z_timestamps, Z_inflow=Z_inflow)
+                 Z_timestamps=Z_timestamps, Z_inflow=Z_inflow,
+                 min_inflow=min_inflow, max_inflow=max_inflow, sample_date=sample_date)
 
+    plot_point_of_interest(sample_date, timestamps_test, X_test_scaled, model, 
+                           scaler_Y, Y_actual=Y_test, min_val=min_inflow, max_val=max_inflow)
 
 if __name__ == "__main__":
     main()

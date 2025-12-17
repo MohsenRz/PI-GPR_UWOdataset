@@ -233,8 +233,7 @@ def prediction_warped(model, X_scaled, scaler_Y_warped, warper):
     # transform to physical space 
     lower_ci = warper.inverse_transform(lat_lower)
     upper_ci = warper.inverse_transform(lat_upper)
-    
-    
+        
     return Y_pred_mean, Y_pred_std, lower_ci, upper_ci
 
 def model_evaluation(Y_true, Y_pred, lower_ci, upper_ci):
@@ -299,7 +298,7 @@ def plot_warped_distribution(target_date_str, timestamps,
     Generates a local histogram for a specific point without MC sampling. 
     """
     target_ts = pd.to_datetime(target_date_str)
-    # Find index
+    # finding closest timestamp 
     diffs = np.abs(timestamps - target_ts)
     idx = np.argmin(diffs)
     actual_ts = timestamps[idx]
@@ -307,11 +306,11 @@ def plot_warped_distribution(target_date_str, timestamps,
     print(f"\n--- DISTRIBUTION PLOT ---")
     print(f"Target: {target_ts}, Actual: {actual_ts}")
     
-    # 1. Get Latent Prediction for this specific point
+    # Prediction for this specific point
     x_input = X_scaled[idx].reshape(1, -1)
     mean_lat_sc, var_lat_sc = model.predict_y(x_input)
     
-    # 2. Unscale Latent parameters
+    # Unscale Latent parameters
     mu_lat = scaler_Y_warped.inverse_transform(mean_lat_sc.numpy())[0][0]
     std_lat = (np.sqrt(var_lat_sc.numpy()) * scaler_Y_warped.scale_)[0][0]
     
@@ -336,7 +335,7 @@ def plot_warped_distribution(target_date_str, timestamps,
     ax.axvline(MIN_INFLOW, color='k', lw=3, label='Min Constraint')
     ax.axvline(MAX_INFLOW, color='k', lw=3, label='Max Constraint')
     
-    ax.set_title(f"Predictive Distribution at {actual_ts}\n(Non-Gaussian Skew)", fontsize=14)
+    ax.set_title(f"Predictive Distribution at {actual_ts}\n(Non-Gaussian Skew, Sampled from the Gauss-Hermite output)", fontsize=14)
     ax.set_xlabel("Inflow (L/s)")
     ax.set_ylabel("Density")
     ax.legend()
