@@ -78,7 +78,7 @@ min_inflow = 0.0  # Minimum WWTP inflow (L/s)
 max_inflow = 180.0  # Maximum WWTP inflow (L/s) based on the throttle setting
 
 # inducing points 
-M = 500  # number of inducing points
+M = 1000  # number of inducing points
 
 WWTP_inflow_train = WWTP_inflow[(WWTP_inflow['timestamp'] >= train_start_time) & (WWTP_inflow['timestamp'] <= train_end_time)]
 precipitation_train = precipitation[(precipitation['timestamp'] >= train_start_time) & (precipitation['timestamp'] <= train_end_time)]
