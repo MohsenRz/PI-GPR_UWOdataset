@@ -66,7 +66,11 @@ merged_test = WWTP_test_resampled.join(precipitation_test_resampled,
                                        lsuffix='_inflow', rsuffix='_precipitation', how='inner')
 merged_train.dropna(inplace=True)
 merged_test.dropna(inplace=True)
-average_inflow = merged_train.filter(like='inflow').mean().values[0]
+inflow = merged_train.filter(like='inflow').iloc[:, 0]
+average_inflow = inflow.mean()
+p5 = inflow.quantile(0.05)
+p95 = inflow.quantile(0.95)
+average_inflow_trimmed = inflow[(inflow >= p5) & (inflow <= p95)].mean()
 
 print(f"Training period: {train_start_time} to {train_end_time} ({train_days} days)")
 print(f"Test period: {train_end_time} to {test_end_time} ({test_hours} hours)")
@@ -74,6 +78,7 @@ print(f"Training samples: {len(merged_train)}")
 print(f"Test samples: {len(merged_test)}")
 print(f"Data statistics: mean inflow = {average_inflow:.2f} L/s,\
       mean precipitation = {merged_train.filter(like='precipitation').mean().values[0]*24/timeinterval:.2f} mm/day")
+print(f"Trimmed mean inflow (5-95th percentile): {average_inflow_trimmed:.2f} L/s")
 
 def preparing_data(merged_data, start_time, interval_minutes=timeinterval): 
     #creating multi dimensional input as timestamps and precipitation data
@@ -319,7 +324,7 @@ def main():
         
     # preparing the mean function 
     daily_pattern = mean_function(mean_data, scaler_Y, timestep=timeinterval, 
-                                  average_inflow=average_inflow)
+                                  average_inflow=average_inflow_trimmed)
     
     # lookup function for mean
     time_mean = scaler_X.mean_[0]
