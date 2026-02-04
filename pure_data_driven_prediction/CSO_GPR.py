@@ -54,10 +54,10 @@ precipitation_train = precipitation_train.set_index('timestamp')
 precipitation_test = precipitation_test.set_index('timestamp')
 
 interval_string = f'{timeinterval}min' # resample interval
-CSO_train_resampled = CSO_train.resample(interval_string).mean().interpolate()
-CSO_test_resampled = CSO_test.resample(interval_string).mean().interpolate()
-precipitation_train_resampled = precipitation_train.resample(interval_string).mean().interpolate()
-precipitation_test_resampled = precipitation_test.resample(interval_string).mean().interpolate()
+CSO_train_resampled = CSO_train.resample(interval_string).mean().fillna(0)
+CSO_test_resampled = CSO_test.resample(interval_string).mean().fillna(0)
+precipitation_train_resampled = precipitation_train.resample(interval_string).mean().fillna(0)
+precipitation_test_resampled = precipitation_test.resample(interval_string).mean().fillna(0)
 
 # Merge data 
 merged_train = CSO_train_resampled.join(precipitation_train_resampled, 
@@ -73,7 +73,7 @@ print(f"Training period: {train_start_time} to {train_end_time} ({train_days} da
 print(f"Test period: {train_end_time} to {test_end_time} ({test_hours} hours)")
 print(f"Training samples: {len(merged_train)}")
 print(f"Test samples: {len(merged_test)}")
-print(f"Data statistics: mean daily CSO = {average_CSO*3600*24:.1f} L,\
+print(f"Data statistics: mean daily CSO = {average_CSO*3.6*24:.1f} m3,\
       mean precipitation = {merged_train.filter(like='precipitation').mean().values[0]*24/timeinterval:.2f} mm/day")
 
 def preparing_data(merged_data, start_time, interval_minutes=timeinterval): 
@@ -216,9 +216,7 @@ def plot_results(timestamps_train, Y_train, Y_pred_train, std_train,
     
 def main():
     total_start = time.perf_counter()
-    print("="*70)
-    print("GPR Model for WWTP Inflow Prediction")
-    print("="*70)
+    print("="*70 + "\nNaive CSO GPR Prediction\n" + "="*70)
     
     # Prepare training data (Pass interval to calc window size)
     X_train, Y_train, timestamps_train = preparing_data(merged_train, train_start_time, timeinterval)
