@@ -1,8 +1,8 @@
 import pandas as pd
 import matplotlib.pyplot as plt
 
-data = pd.read_pickle(r'RAW_data\pickled_data\precipitation\sensor_bn_r02_school_chatzenrainstr_2019-01-01_to_2019-12-31.pkl')
-datatype = "precipitation" 
+data = pd.read_pickle(r'RAW_data\pickled_data\RB59_retention_tank_water_level\sensor_bl_plsRKBA1201_rubbasin_ara_2019-01-01_to_2019-12-31.pkl')
+datatype = "level" 
 data['timestamp'] = pd.to_datetime(data['timestamp'])
 start_time = pd.to_datetime("2019-01-01 00:00:00")
 end_time = pd.to_datetime("2019-12-30 23:59:59")
@@ -20,7 +20,7 @@ def plot(data):
     plt.plot(data.index, data['value'], label=datatype, color='blue')
     plt.xlabel('Date')
     plt.ylabel(f'{datatype} ({unit})')
-    plt.title('WWTP Inflow Data for 2019')
+    plt.title('Water Level in Retention Tank (2019)')
     plt.legend()
     plt.grid(True)
     plt.show()
