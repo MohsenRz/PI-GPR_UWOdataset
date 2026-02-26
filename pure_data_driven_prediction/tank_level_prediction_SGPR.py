@@ -1,9 +1,10 @@
 """
 making a Gaussian Process Regression model for CSO prediction
+a naive sparsificatio nmethod is applied here 
 Water level in the upstream tank of the CSO should be predicted using GPR. 
 sensor data is used  
 Author: Mohsen 
-Date: 06/02/2026
+Date: 25/02/2026
 """
 
 import numpy as np
@@ -14,7 +15,7 @@ import gpflow
 from sklearn.preprocessing import StandardScaler
 import matplotlib.dates as mdates
 import time
-from scipy.stats import norm
+from scipy.cluster.vq import kmeans
 from pathlib import Path
 import tensorflow_probability as tfp
 
@@ -33,14 +34,17 @@ Tank_level['timestamp'] = pd.to_datetime(Tank_level['timestamp'])
 precipitation['timestamp'] = pd.to_datetime(precipitation['timestamp'])
 
 # train parameters 
-train_start_time = pd.to_datetime("2019-04-01 00:00:00")
-train_days = 40  # Number of days for training
+train_start_time = pd.to_datetime("2019-02-01 00:00:00")
+train_days = 150  # Number of days for training
 train_end_time = train_start_time + pd.Timedelta(days=train_days)
 
 # test parameters
-test_hours = 3 * 24  # Hours to predict
+test_hours = 5 * 24  # Hours to predict
 test_end_time = train_end_time + pd.Timedelta(hours=test_hours)
-timeinterval = 10 # minutes 
+timeinterval = 5 # minutes 
+
+# inducing points 
+M = 800
 
 tank_train = Tank_level[(Tank_level['timestamp'] >= train_start_time) & (Tank_level['timestamp'] <= train_end_time)]
 precipitation_train = precipitation[(precipitation['timestamp'] >= train_start_time) & (precipitation['timestamp'] <= train_end_time)]
@@ -75,6 +79,7 @@ print(f"Training samples: {len(merged_train)}")
 print(f"Test samples: {len(merged_test)}")
 print(f"Data statistics: mean daily water level = {average_tank_level:.1f} mm,\
       mean precipitation = {merged_train.filter(like='precipitation').mean().values[0]*60*24/timeinterval:.2f} mm/day")
+
 def preparing_data(merged_data, start_time, interval_minutes=timeinterval): 
     #creating multi dimensional input as timestamps and precipitation data
     timestamps = merged_data.index
@@ -98,9 +103,9 @@ def preparing_data(merged_data, start_time, interval_minutes=timeinterval):
         
     return X_multi, Y, timestamps
 
-def build_gpr_model(X_train, Y_train, time_std_dev):
+def build_sgpr_model(X_train, Y_train, time_std_dev):
     """
-    Build and train GPR model
+    Build and train the SGPR model
     X_train: Scaled training data 
     Y_train: Scaled target data
     time_std_dev: the scaling factor (std) of the Time Column from scalara_X.scale_[0]
@@ -122,11 +127,20 @@ def build_gpr_model(X_train, Y_train, time_std_dev):
     
     kernel = kernel_rain + time_kernel
     
+    # sparsification 
+    num_inducing = min(M, X_train.shape[0]//2)  # choose number of inducing points
+    Z_init, _ = kmeans(X_train, num_inducing)
+    Z = tf.convert_to_tensor(Z_init, dtype=tf.float64)
+        
     X_train_tf = tf.convert_to_tensor(X_train, dtype=tf.float64)
     Y_train_tf = tf.convert_to_tensor(Y_train, dtype=tf.float64)
     
-    model = gpflow.models.GPR(data=(X_train_tf, Y_train_tf), 
-                              kernel=kernel, mean_function=None)
+    model = gpflow.models.SGPR(
+        data=(X_train_tf, Y_train_tf), 
+        inducing_variable=Z,
+        kernel=kernel, mean_function=None)
+    # freezing inducing points 
+    gpflow.set_trainable(model.inducing_variable, False)
     
     # optimisation 
     opt = gpflow.optimizers.Scipy()
@@ -168,9 +182,11 @@ def model_evaluation(Y_true, Y_pred, std_pred):
     }
     
 def plot_results(timestamps_train, Y_train, Y_pred_train, std_train,
-                 timestamps_test, Y_test, Y_pred_test, std_test):
+                 timestamps_test, Y_test, Y_pred_test, std_test,
+                 Z_timestamps=None, Z_values=None):
     """
     Plot training and test results with uncertainty.
+    inducing points are shown on the plot 
     """
     fig, ax = plt.subplots(figsize=(12, 6))
     
@@ -183,7 +199,11 @@ def plot_results(timestamps_train, Y_train, Y_pred_train, std_train,
                     Y_pred_train.ravel() - 1.96 * std_train.ravel(),
                     Y_pred_train.ravel() + 1.96 * std_train.ravel(),
                     alpha=0.2, color='green', label='95% CI (Training)', zorder=2)
-    
+    # plotting inducing points 
+    if Z_timestamps is not None and Z_values is not None:
+        ax.scatter(Z_timestamps, Z_values.ravel(), c='purple', s=50, 
+                   label='Inducing Points', marker='|', zorder=5)
+        
     # plotting test data
     ax.scatter(timestamps_test, Y_test.ravel(), c='orange', s=15,
                label='Test Data (Actual)', alpha=0.7, zorder=3)
@@ -201,7 +221,7 @@ def plot_results(timestamps_train, Y_train, Y_pred_train, std_train,
     # Formatting
     ax.set_xlabel('Date', fontsize=12)
     ax.set_ylabel('Tank Level (mm)', fontsize=12)
-    ax.set_title(f'GPR: tank level Prediction (Train: {train_days} days, Test: {test_hours} hours)', 
+    ax.set_title(f'SGPR: tank level Prediction (Train: {train_days} days, Test: {test_hours} hours)', 
                  fontsize=14)
     ax.legend(fontsize=11, loc='best')
     ax.grid(True, alpha=0.3)
@@ -227,9 +247,9 @@ def main():
     X_train_scaled = scaler_X.fit_transform(X_train)
     Y_train_scaled = scaler_Y.fit_transform(Y_train)
     
-    print("\nTraining GPR model...")
+    print("\nTraining SGPR model...")
     # Pass Time Std Dev for Period Calculation
-    model = build_gpr_model(X_train_scaled, Y_train_scaled, scaler_X.scale_[0])
+    model = build_sgpr_model(X_train_scaled, Y_train_scaled, scaler_X.scale_[0])
     
     # --- PREDICTION ON TRAIN ---
     X_train_tf = tf.convert_to_tensor(X_train_scaled, dtype=tf.float64)
@@ -254,6 +274,14 @@ def main():
     std_test_y = np.sqrt(var_test_y_sc.numpy()) * scaler_Y.scale_
     std_test_f = np.sqrt(var_test_f_sc.numpy()) * scaler_Y.scale_
     
+    # Extracting inducing points for plotting
+    Z_scaled = model.inducing_variable.Z.numpy()
+    Z_unscaled = scaler_X.inverse_transform(Z_scaled)
+    Z_time_minutes = Z_unscaled[:, 0]
+    Z_timestamps = [train_start_time + pd.Timedelta(minutes=float(tm)) for tm in Z_time_minutes]
+    mu_Z_scaled, _ = model.predict_f(Z_scaled)
+    Z_values = scaler_Y.inverse_transform(mu_Z_scaled.numpy())
+    
     # --- COMPARISON TABLE ---
     train_metrics = model_evaluation(Y_train, Y_pred_train, std_train_y)
     test_metrics = model_evaluation(Y_test, Y_pred_test, std_test_y)
@@ -274,7 +302,8 @@ def main():
     print("Prediction complete!")
     #--- PLOTTING ---
     plot_results(timestamps_train, Y_train, Y_pred_train, std_train_y,
-                 timestamps_test, Y_test, Y_pred_test, std_test_y)
+                 timestamps_test, Y_test, Y_pred_test, std_test_y,
+                 Z_timestamps=Z_timestamps, Z_values=Z_values)
 
 if __name__ == "__main__":
     main()
