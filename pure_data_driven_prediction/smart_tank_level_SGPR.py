@@ -84,7 +84,61 @@ print(f"Test samples: {len(merged_test)}")
 print(f"Data statistics: mean daily water level = {average_tank_level:.1f} mm,\
       mean precipitation = {merged_train.filter(like='precipitation').mean().values[0]*60*24/timeinterval:.2f} mm/day")
 
-def preparing_data(merged_data, start_time, interval_minutes=timeinterval): 
+def find_optimal_rain_lag(merged_data, interval_minutes, max_lag_hours=3, lag_step_minutes=15):
+    """
+    Perform cross-correlation analysis to find optimal precipitation lag.
+    
+    Returns:
+        optimal_lag_minutes: Best lag time in minutes
+        correlations: Dictionary of {lag_minutes: correlation_value}
+    """
+    inflow_col = [col for col in merged_data.columns if 'inflow' in col.lower()][0]
+    precip_col = [col for col in merged_data.columns if 'precipitation' in col.lower()][0]
+    
+    inflow = merged_data[inflow_col].values
+    precip = merged_data[precip_col].values
+    
+    # Test different lag windows
+    lag_range = range(0, max_lag_hours * 60, lag_step_minutes)
+    correlations = {}
+    
+    for lag_minutes in lag_range:
+        window_size = int(lag_minutes / interval_minutes)
+        if window_size < 1:
+            window_size = 1
+        
+        # Rolling sum for this lag window
+        rain_accum = pd.Series(precip).rolling(window=window_size).sum().fillna(0).values
+        
+        # Calculate correlation (excluding NaNs)
+        valid_idx = ~(np.isnan(inflow) | np.isnan(rain_accum))
+        if valid_idx.sum() > 0:
+            corr = np.corrcoef(inflow[valid_idx], rain_accum[valid_idx])[0, 1]
+            correlations[lag_minutes] = corr
+    
+    # Find optimal lag
+    optimal_lag = max(correlations, key=correlations.get)
+    
+    # Plot results
+    plt.figure(figsize=(10, 5))
+    lags = list(correlations.keys())
+    corrs = list(correlations.values())
+    plt.plot(lags, corrs, 'b-o', linewidth=2, markersize=4)
+    plt.axvline(x=optimal_lag, color='r', linestyle='--', 
+                label=f'Optimal lag: {optimal_lag} min')
+    plt.xlabel('Precipitation Accumulation Window (minutes)', fontsize=12)
+    plt.ylabel('Cross-correlation with CSO Inflow', fontsize=12)
+    plt.title('Cross-Correlation Analysis: Rain Lag vs CSO Response', fontsize=14)
+    plt.grid(True, alpha=0.3)
+    plt.legend()
+    plt.tight_layout()
+    plt.show()
+    
+    print(f"\nOptimal precipitation lag: {optimal_lag} minutes")
+    
+    return optimal_lag, correlations
+
+def preparing_data(merged_data, start_time, interval_minutes=timeinterval, lag_minutes=120): 
     #creating multi dimensional input as timestamps and precipitation data
     timestamps = merged_data.index
     level_col = [col for col in merged_data.columns if 'inflow' in col.lower()][0]
@@ -93,7 +147,7 @@ def preparing_data(merged_data, start_time, interval_minutes=timeinterval):
     time_feat = np.array([(ts - start_time).total_seconds() / 60.0 for ts in timestamps]).reshape(-1, 1)  # time in minutes
     ## I sum up the previous 60 mins precipitation to consider lag effect
     # Calculate window size dynamically (Target 60 mins / Interval)
-    window_size = int(60 / interval_minutes) 
+    window_size = int(lag_minutes / interval_minutes) 
     if window_size < 1: window_size = 1
     
     rain_series = merged_data[precip_col]
@@ -285,8 +339,12 @@ def main():
     total_start = time.perf_counter()
     print("="*70 + "\nTank water prediction\n" + "="*70)
     
+    # Find optimal lag
+    print("\nPerforming cross-correlation analysis...")
+    optimal_lag, correlations = find_optimal_rain_lag(merged_train, timeinterval)
+    
     # Prepare training data (Pass interval to calc window size)
-    X_train, Y_train, timestamps_train = preparing_data(merged_train, train_start_time, timeinterval)
+    X_train, Y_train, timestamps_train = preparing_data(merged_train, train_start_time, timeinterval, lag_minutes=optimal_lag)
     
     # Standardize
     scaler_X = StandardScaler()
@@ -311,7 +369,7 @@ def main():
     std_train_f = np.sqrt(var_train_f_sc.numpy()) * scaler_Y.scale_
     
     # --- PREDICTION ON TEST ---
-    X_test, Y_test, timestamps_test = preparing_data(merged_test, train_start_time, timeinterval)
+    X_test, Y_test, timestamps_test = preparing_data(merged_test, train_start_time, timeinterval, lag_minutes=optimal_lag)
     X_test_scaled = scaler_X.transform(X_test)
     
     print(f"\nGenerating {test_hours}-hour predictions...")

@@ -132,7 +132,7 @@ def find_optimal_rain_lag(merged_data, interval_minutes, max_lag_hours=3, lag_st
     
     return optimal_lag, correlations
 
-def preparing_data(merged_data, start_time, interval_minutes=timeinterval, lag_minutes=60): 
+def preparing_data(merged_data, start_time, interval_minutes=timeinterval, lag_minutes=120): 
     #creating multi dimensional input as timestamps and precipitation data
     timestamps = merged_data.index
     inflow_col = [col for col in merged_data.columns if 'inflow' in col.lower()][0]
