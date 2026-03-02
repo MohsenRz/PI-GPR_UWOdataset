@@ -1,9 +1,9 @@
 """
 making a Gaussian Process Regression model for CSO prediction
-Water level in the upstream tank of the CSO should be predicted using GPR. 
-sensor data is used  
+sensor data is used 
+this is a naive model that only takes CSO data for predictions 
 Author: Mohsen 
-Date: 06/02/2026
+Date: 04/02/2026
 """
 
 import numpy as np
@@ -18,83 +18,140 @@ from scipy.stats import norm
 from pathlib import Path
 import tensorflow_probability as tfp
 
-# Load the data
+# load data
 BASE = Path(__file__).parent.parent
 
 data_path = BASE / "RAW_data" / "pickled_data"
 
-Tank_level = pd.read_pickle(
-    data_path / "RB59_retention_tank_water_level" / "sensor_bl_plsRKBA1201_rubbasin_ara_2019-01-01_to_2019-12-31.pkl")
+CSO = pd.read_pickle(
+    data_path / "overflow_to_CSO" / "sensor_bf_plsRKBA1101_rubbasin_ara_2019-01-01_to_2019-12-31.pkl")
 precipitation = pd.read_pickle(
     data_path / "precipitation" / "sensor_bn_r02_school_chatzenrainstr_2019_cleaned.pkl")
 
-# Convert timestamp columns to datetime
-Tank_level['timestamp'] = pd.to_datetime(Tank_level['timestamp'])
+# preprocess data
+CSO['timestamp'] = pd.to_datetime(CSO['timestamp'])
 precipitation['timestamp'] = pd.to_datetime(precipitation['timestamp'])
 
 # train parameters 
-train_start_time = pd.to_datetime("2019-04-01 00:00:00")
-train_days = 30  # Number of days for training
+train_start_time = pd.to_datetime("2019-06-01 00:00:00")
+train_days = 15  # Number of days for training
 train_end_time = train_start_time + pd.Timedelta(days=train_days)
 
 # test parameters
-test_hours = 3 * 24  # Hours to predict
+test_hours = 5 * 24  # Hours to predict
 test_end_time = train_end_time + pd.Timedelta(hours=test_hours)
-timeinterval = 15 # minutes 
+timeinterval = 3 # minutes 
 
-tank_train = Tank_level[(Tank_level['timestamp'] >= train_start_time) & (Tank_level['timestamp'] <= train_end_time)]
+CSO_train = CSO[(CSO['timestamp'] >= train_start_time) & (CSO['timestamp'] <= train_end_time)]
 precipitation_train = precipitation[(precipitation['timestamp'] >= train_start_time) & (precipitation['timestamp'] <= train_end_time)]
 
-tank_test = Tank_level[(Tank_level['timestamp'] >= train_end_time) & (Tank_level['timestamp'] <= test_end_time)]
+CSO_test = CSO[(CSO['timestamp'] >= train_end_time) & (CSO['timestamp'] <= test_end_time)]
 precipitation_test = precipitation[(precipitation['timestamp'] >= train_end_time) & (precipitation['timestamp'] <= test_end_time)]
 
-tank_train = tank_train.set_index('timestamp')
+CSO_train = CSO_train.set_index('timestamp')
+CSO_test = CSO_test.set_index('timestamp')
 precipitation_train = precipitation_train.set_index('timestamp')
-tank_test = tank_test.set_index('timestamp')
 precipitation_test = precipitation_test.set_index('timestamp')
 
 interval_string = f'{timeinterval}min' # resample interval
-tank_train_resampled = tank_train.resample(interval_string).mean().fillna(0)
-tank_test_resampled = tank_test.resample(interval_string).mean().fillna(0)
-precipitation_train_resampled = precipitation_train.resample(interval_string).mean().fillna(0)  
+CSO_train_resampled = CSO_train.resample(interval_string).mean().fillna(0)
+CSO_test_resampled = CSO_test.resample(interval_string).mean().fillna(0)
+precipitation_train_resampled = precipitation_train.resample(interval_string).mean().fillna(0)
 precipitation_test_resampled = precipitation_test.resample(interval_string).mean().fillna(0)
 
 # Merge data 
-merged_train = tank_train_resampled.join(precipitation_train_resampled, 
+merged_train = CSO_train_resampled.join(precipitation_train_resampled, 
                                          lsuffix='_inflow', rsuffix='_precipitation', how='inner')
-merged_test = tank_test_resampled.join(precipitation_test_resampled, 
+merged_test = CSO_test_resampled.join(precipitation_test_resampled, 
                                        lsuffix='_inflow', rsuffix='_precipitation', how='inner')
 merged_train.dropna(inplace=True)
 merged_test.dropna(inplace=True)
-average_tank_level = Tank_level['value'].mean()
+average_CSO = CSO['value'].mean()
 average_precipitation = precipitation['value'].mean()
 
 print(f"Training period: {train_start_time} to {train_end_time} ({train_days} days)")
 print(f"Test period: {train_end_time} to {test_end_time} ({test_hours} hours)")
 print(f"Training samples: {len(merged_train)}")
 print(f"Test samples: {len(merged_test)}")
-print(f"Data statistics: mean daily water level = {average_tank_level:.1f} mm,\
-      mean precipitation = {merged_train.filter(like='precipitation').mean().values[0]*60*24/timeinterval:.2f} mm/day")
-def preparing_data(merged_data, start_time, interval_minutes=timeinterval): 
+print(f"Data statistics: mean daily CSO = {average_CSO*3.6*24:.1f} m3,\
+      mean precipitation = {merged_train.filter(like='precipitation').mean().values[0]*24/timeinterval:.2f} mm/day")
+
+def find_optimal_rain_lag(merged_data, interval_minutes, max_lag_hours=3, lag_step_minutes=15):
+    """
+    Perform cross-correlation analysis to find optimal precipitation lag.
+    
+    Returns:
+        optimal_lag_minutes: Best lag time in minutes
+        correlations: Dictionary of {lag_minutes: correlation_value}
+    """
+    inflow_col = [col for col in merged_data.columns if 'inflow' in col.lower()][0]
+    precip_col = [col for col in merged_data.columns if 'precipitation' in col.lower()][0]
+    
+    inflow = merged_data[inflow_col].values
+    precip = merged_data[precip_col].values
+    
+    # Test different lag windows
+    lag_range = range(0, max_lag_hours * 60 + 1, lag_step_minutes)
+    correlations = {}
+    
+    for lag_minutes in lag_range:
+        window_size = int(lag_minutes / interval_minutes)
+        if window_size < 1:
+            window_size = 1
+        
+        # Rolling sum for this lag window
+        rain_accum = pd.Series(precip).rolling(window=window_size).sum().fillna(0).values
+        
+        # Calculate correlation (excluding NaNs)
+        valid_idx = ~(np.isnan(inflow) | np.isnan(rain_accum))
+        if valid_idx.sum() > 0:
+            corr = np.corrcoef(inflow[valid_idx], rain_accum[valid_idx])[0, 1]
+            correlations[lag_minutes] = corr
+    
+    # Find optimal lag
+    optimal_lag = max(correlations, key=correlations.get)
+    
+    """
+    # Plot results
+    plt.figure(figsize=(10, 5))
+    lags = list(correlations.keys())
+    corrs = list(correlations.values())
+    plt.plot(lags, corrs, 'b-o', linewidth=2, markersize=4)
+    plt.axvline(x=optimal_lag, color='r', linestyle='--', 
+                label=f'Optimal lag: {optimal_lag} min')
+    plt.xlabel('Precipitation Accumulation Window (minutes)', fontsize=12)
+    plt.ylabel('Cross-correlation with CSO Inflow', fontsize=12)
+    plt.title('Cross-Correlation Analysis: Rain Lag vs CSO Response', fontsize=14)
+    plt.grid(True, alpha=0.3)
+    plt.legend()
+    plt.tight_layout()
+    plt.show()
+    """
+    print(f"\nOptimal precipitation lag: {optimal_lag} minutes")
+    print(f"Max correlation: {correlations[optimal_lag]:.3f}")
+    
+    return optimal_lag, correlations
+
+def preparing_data(merged_data, start_time, interval_minutes=timeinterval, lag_minutes=60): 
     #creating multi dimensional input as timestamps and precipitation data
     timestamps = merged_data.index
-    level_col = [col for col in merged_data.columns if 'inflow' in col.lower()][0]
+    inflow_col = [col for col in merged_data.columns if 'inflow' in col.lower()][0]
     precip_col = [col for col in merged_data.columns if 'precipitation' in col.lower()][0]
     
     time_feat = np.array([(ts - start_time).total_seconds() / 60.0 for ts in timestamps]).reshape(-1, 1)  # time in minutes
     ## I sum up the previous 60 mins precipitation to consider lag effect
-    # Calculate window size dynamically (Target 60 mins / Interval)
-    window_size = int(60 / interval_minutes) 
+    # Calculate window size dynamically
+    window_size = int(lag_minutes / interval_minutes) 
     if window_size < 1: window_size = 1
     
     rain_series = merged_data[precip_col]
     # rolling sum, fill NaN at start with 0
     rain_accum = rain_series.rolling(window=window_size).sum().fillna(0).values.reshape(-1, 1)
     
-    level = merged_data[level_col].values.reshape(-1, 1)
+    inflow = merged_data[inflow_col].values.reshape(-1, 1)
     
     X_multi = np.hstack((time_feat, rain_accum))
-    Y = level
+    Y = inflow
         
     return X_multi, Y, timestamps
 
@@ -105,7 +162,6 @@ def build_gpr_model(X_train, Y_train, time_std_dev):
     Y_train: Scaled target data
     time_std_dev: the scaling factor (std) of the Time Column from scalara_X.scale_[0]
     """ 
-    
     minutes_in_day = 24 * 60
     scaled_period = minutes_in_day / time_std_dev  # Adjust period based on scaling
     print(f"Scaled period for daily cycle: {scaled_period}")
@@ -161,10 +217,10 @@ def model_evaluation(Y_true, Y_pred, std_pred):
     mean_entropy = np.mean(entropy_per_point)
     
     return {
-        "RMSE (mm)": RMSE,
-        "MAE (mm)": MAE,
+        "RMSE (L/s)": RMSE,
+        "MAE (L/s)": MAE,
         "Coverage (%)": coverage * 100,
-        "Entropy (bits)": mean_entropy
+        "Entropy (nats)": mean_entropy
     }
     
 def plot_results(timestamps_train, Y_train, Y_pred_train, std_train,
@@ -200,8 +256,8 @@ def plot_results(timestamps_train, Y_train, Y_pred_train, std_train,
     
     # Formatting
     ax.set_xlabel('Date', fontsize=12)
-    ax.set_ylabel('Tank Level (mm)', fontsize=12)
-    ax.set_title(f'GPR: tank level Prediction (Train: {train_days} days, Test: {test_hours} hours)', 
+    ax.set_ylabel('WWTP Inflow', fontsize=12)
+    ax.set_title(f'GPR: WWTP Inflow Prediction (Train: {train_days} days, Test: {test_hours} hours)', 
                  fontsize=14)
     ax.legend(fontsize=11, loc='best')
     ax.grid(True, alpha=0.3)
@@ -213,13 +269,17 @@ def plot_results(timestamps_train, Y_train, Y_pred_train, std_train,
     
     plt.tight_layout()
     plt.show()
-
+    
 def main():
     total_start = time.perf_counter()
-    print("="*70 + "\nTank water prediction\n" + "="*70)
+    print("="*70 + "\nNaive CSO GPR Prediction\n" + "="*70)
     
-    # Prepare training data (Pass interval to calc window size)
-    X_train, Y_train, timestamps_train = preparing_data(merged_train, train_start_time, timeinterval)
+    # Find optimal lag
+    print("\nPerforming cross-correlation analysis...")
+    optimal_lag, correlations = find_optimal_rain_lag(merged_train, timeinterval)
+
+    # Prepare training data with optimal lag
+    X_train, Y_train, timestamps_train = preparing_data(merged_train, train_start_time, timeinterval, lag_minutes=optimal_lag)
     
     # Standardize
     scaler_X = StandardScaler()
@@ -241,7 +301,7 @@ def main():
     std_train_f = np.sqrt(var_train_f_sc.numpy()) * scaler_Y.scale_
     
     # --- PREDICTION ON TEST ---
-    X_test, Y_test, timestamps_test = preparing_data(merged_test, train_start_time, timeinterval)
+    X_test, Y_test, timestamps_test = preparing_data(merged_test, train_start_time, timeinterval, lag_minutes=optimal_lag)
     X_test_scaled = scaler_X.transform(X_test)
     
     print(f"\nGenerating {test_hours}-hour predictions...")
@@ -278,3 +338,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+

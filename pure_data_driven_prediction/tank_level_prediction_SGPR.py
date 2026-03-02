@@ -34,17 +34,17 @@ Tank_level['timestamp'] = pd.to_datetime(Tank_level['timestamp'])
 precipitation['timestamp'] = pd.to_datetime(precipitation['timestamp'])
 
 # train parameters 
-train_start_time = pd.to_datetime("2019-02-01 00:00:00")
-train_days = 150  # Number of days for training
+train_start_time = pd.to_datetime("2019-01-11 00:00:00")
+train_days = 60  # Number of days for training
 train_end_time = train_start_time + pd.Timedelta(days=train_days)
 
 # test parameters
 test_hours = 5 * 24  # Hours to predict
 test_end_time = train_end_time + pd.Timedelta(hours=test_hours)
-timeinterval = 5 # minutes 
+timeinterval = 1 # minutes 
 
 # inducing points 
-M = 800
+M = 500
 
 tank_train = Tank_level[(Tank_level['timestamp'] >= train_start_time) & (Tank_level['timestamp'] <= train_end_time)]
 precipitation_train = precipitation[(precipitation['timestamp'] >= train_start_time) & (precipitation['timestamp'] <= train_end_time)]
