@@ -2,8 +2,11 @@
 making a Gaussian Process Regression model for CSO prediction
 sensor data is used 
 this is a naive model that only takes CSO data for predictions 
+automatic lag time detection is used to find the optimal lag time for precipitation data in short term
+a new attribute is added: long-term accumulated precipitation, to see the effect in filling the upstream tank
+comparisons will be made between the predictions and the real sensor values at the exact moments of time, not an average 
 Author: Mohsen 
-Date: 04/02/2026
+Date: 03/03/2026
 """
 
 import numpy as np
@@ -34,13 +37,13 @@ precipitation['timestamp'] = pd.to_datetime(precipitation['timestamp'])
 
 # train parameters 
 train_start_time = pd.to_datetime("2019-06-01 00:00:00")
-train_days = 15  # Number of days for training
+train_days = 30  # Number of days for training
 train_end_time = train_start_time + pd.Timedelta(days=train_days)
 
 # test parameters
 test_hours = 5 * 24  # Hours to predict
 test_end_time = train_end_time + pd.Timedelta(hours=test_hours)
-timeinterval = 3 # minutes 
+timeinterval = 15 # minutes 
 
 CSO_train = CSO[(CSO['timestamp'] >= train_start_time) & (CSO['timestamp'] <= train_end_time)]
 precipitation_train = precipitation[(precipitation['timestamp'] >= train_start_time) & (precipitation['timestamp'] <= train_end_time)]
@@ -76,7 +79,7 @@ print(f"Test samples: {len(merged_test)}")
 print(f"Data statistics: mean daily CSO = {average_CSO*3.6*24:.1f} m3,\
       mean precipitation = {merged_train.filter(like='precipitation').mean().values[0]*24/timeinterval:.2f} mm/day")
 
-def find_optimal_rain_lag(merged_data, interval_minutes, max_lag_hours=3, lag_step_minutes=15):
+def find_optimal_short_term_rain_lag(merged_data, interval_minutes, max_lag_hours=2, lag_step_minutes=15):
     """
     Perform cross-correlation analysis to find optimal precipitation lag.
     
@@ -111,7 +114,7 @@ def find_optimal_rain_lag(merged_data, interval_minutes, max_lag_hours=3, lag_st
     # Find optimal lag
     optimal_lag = max(correlations, key=correlations.get)
     
-    """
+   
     # Plot results
     plt.figure(figsize=(10, 5))
     lags = list(correlations.keys())
@@ -126,31 +129,37 @@ def find_optimal_rain_lag(merged_data, interval_minutes, max_lag_hours=3, lag_st
     plt.legend()
     plt.tight_layout()
     plt.show()
-    """
+ 
     print(f"\nOptimal precipitation lag: {optimal_lag} minutes")
     print(f"Max correlation: {correlations[optimal_lag]:.3f}")
     
     return optimal_lag, correlations
 
-def preparing_data(merged_data, start_time, interval_minutes=timeinterval, lag_minutes=120): 
+def preparing_data(merged_data, start_time, interval_minutes=timeinterval, 
+                   short_lag_minutes=120, long_lag_hours=24): 
     #creating multi dimensional input as timestamps and precipitation data
     timestamps = merged_data.index
     inflow_col = [col for col in merged_data.columns if 'inflow' in col.lower()][0]
     precip_col = [col for col in merged_data.columns if 'precipitation' in col.lower()][0]
     
     time_feat = np.array([(ts - start_time).total_seconds() / 60.0 for ts in timestamps]).reshape(-1, 1)  # time in minutes
-    ## I sum up the previous 60 mins precipitation to consider lag effect
-    # Calculate window size dynamically
-    window_size = int(lag_minutes / interval_minutes) 
-    if window_size < 1: window_size = 1
     
     rain_series = merged_data[precip_col]
-    # rolling sum, fill NaN at start with 0
-    rain_accum = rain_series.rolling(window=window_size).sum().fillna(0).values.reshape(-1, 1)
+    
+    ## Feature ONE: Short-term accumulated precipitation
+    # Calculate window size dynamically
+    window_size_short = int(short_lag_minutes / interval_minutes) 
+    if window_size_short < 1: window_size_short = 1
+    rain_short = rain_series.rolling(window=window_size_short).sum().fillna(0).values.reshape(-1, 1)
+    
+    ## Feature TWO: Long-term accumulated precipitation
+    window_size_long = int(long_lag_hours * 60 / interval_minutes)
+    if window_size_long < 1: window_size_long = 1
+    rain_long = rain_series.rolling(window=window_size_long).sum().fillna(0).values.reshape(-1, 1)
     
     inflow = merged_data[inflow_col].values.reshape(-1, 1)
     
-    X_multi = np.hstack((time_feat, rain_accum))
+    X_multi = np.hstack((time_feat, rain_short, rain_long))
     Y = inflow
         
     return X_multi, Y, timestamps
@@ -170,13 +179,19 @@ def build_gpr_model(X_train, Y_train, time_std_dev):
     time_kernel = gpflow.kernels.RBF(lengthscales=scaled_period) 
     
     ### rain kernel 
-    kernel_rain = gpflow.kernels.Matern12(variance=1, active_dims=[1])
-    bounded_transform_rain = tfp.bijectors.Sigmoid(
+    kernel_rain_short = gpflow.kernels.Matern12(variance=1, active_dims=[1])
+    bounded_transform_rain_short = tfp.bijectors.Sigmoid(
         low=tf.constant(0.1, dtype=tf.float64), 
         high=tf.constant(1, dtype=tf.float64)) 
-    kernel_rain.lengthscales = gpflow.Parameter(0.5, transform=bounded_transform_rain)
+    kernel_rain_short.lengthscales = gpflow.Parameter(0.5, transform=bounded_transform_rain_short)
     
-    kernel = kernel_rain + time_kernel
+    kernel_rain_long = gpflow.kernels.Matern52(variance=1, active_dims=[2])
+    bounded_transform_rain_long = tfp.bijectors.Sigmoid(
+        low=tf.constant(1, dtype=tf.float64), 
+        high=tf.constant(5, dtype=tf.float64)) 
+    kernel_rain_long.lengthscales = gpflow.Parameter(3, transform=bounded_transform_rain_long)
+    
+    kernel = kernel_rain_short +kernel_rain_long + time_kernel
     
     X_train_tf = tf.convert_to_tensor(X_train, dtype=tf.float64)
     Y_train_tf = tf.convert_to_tensor(Y_train, dtype=tf.float64)
@@ -276,10 +291,11 @@ def main():
     
     # Find optimal lag
     print("\nPerforming cross-correlation analysis...")
-    optimal_lag, correlations = find_optimal_rain_lag(merged_train, timeinterval)
+    optimal_lag, correlations = find_optimal_short_term_rain_lag(merged_train, timeinterval)
 
     # Prepare training data with optimal lag
-    X_train, Y_train, timestamps_train = preparing_data(merged_train, train_start_time, timeinterval, lag_minutes=optimal_lag)
+    X_train, Y_train, timestamps_train = preparing_data(merged_train, train_start_time, timeinterval, 
+                                                        short_lag_minutes=optimal_lag, long_lag_hours=24)
     
     # Standardize
     scaler_X = StandardScaler()
@@ -301,7 +317,8 @@ def main():
     std_train_f = np.sqrt(var_train_f_sc.numpy()) * scaler_Y.scale_
     
     # --- PREDICTION ON TEST ---
-    X_test, Y_test, timestamps_test = preparing_data(merged_test, train_start_time, timeinterval, lag_minutes=optimal_lag)
+    X_test, Y_test, timestamps_test = preparing_data(merged_test, train_start_time, timeinterval, 
+                                                     short_lag_minutes=optimal_lag, long_lag_hours=24)
     X_test_scaled = scaler_X.transform(X_test)
     
     print(f"\nGenerating {test_hours}-hour predictions...")
