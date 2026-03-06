@@ -4,7 +4,6 @@ sensor data is used
 this is a naive model that only takes CSO data for predictions 
 automatic lag time detection is used to find the optimal lag time for precipitation data in short term
 a new attribute is added: long-term accumulated precipitation, to see the effect in filling the upstream tank
-comparisons will be made between the predictions and the real sensor values at the exact moments of time, not an average 
 Author: Mohsen 
 Date: 03/03/2026
 """
@@ -36,7 +35,7 @@ CSO['timestamp'] = pd.to_datetime(CSO['timestamp'])
 precipitation['timestamp'] = pd.to_datetime(precipitation['timestamp'])
 
 # train parameters 
-train_start_time = pd.to_datetime("2019-06-01 00:00:00")
+train_start_time = pd.to_datetime("2019-08-01 00:00:00")
 train_days = 30  # Number of days for training
 train_end_time = train_start_time + pd.Timedelta(days=train_days)
 

@@ -21,8 +21,8 @@ precipitation = pd.read_pickle(
 Tank_level['timestamp'] = pd.to_datetime(Tank_level['timestamp'])
 precipitation['timestamp'] = pd.to_datetime(precipitation['timestamp'])
 
-plot_days = 20
-start_date = pd.to_datetime("2019-01-01 00:00:00")
+plot_days = 30
+start_date = pd.to_datetime("2019-06-01 00:00:00")
 
 # Plotting
 fig, ax1 = plt.subplots(figsize=(12, 6))

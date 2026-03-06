@@ -39,13 +39,13 @@ precipitation['timestamp'] = pd.to_datetime(precipitation['timestamp'])
 
 # train parameters 
 train_start_time = pd.to_datetime("2019-01-11 00:00:00")
-train_days = 60  # Number of days for training
+train_days = 105  # Number of days for training
 train_end_time = train_start_time + pd.Timedelta(days=train_days)
 
 # test parameters
-test_hours = 5 * 24  # Hours to predict
+test_hours = 3 * 24  # Hours to predict
 test_end_time = train_end_time + pd.Timedelta(hours=test_hours)
-timeinterval = 1 # minutes 
+timeinterval = 15 # minutes 
 
 # inducing points 
 M = 500
@@ -99,7 +99,7 @@ def find_optimal_rain_lag(merged_data, interval_minutes, max_lag_hours=3, lag_st
     precip = merged_data[precip_col].values
     
     # Test different lag windows
-    lag_range = range(0, max_lag_hours * 60, lag_step_minutes)
+    lag_range = range(0, max_lag_hours * 60 + 1, lag_step_minutes)
     correlations = {}
     
     for lag_minutes in lag_range:
@@ -118,7 +118,7 @@ def find_optimal_rain_lag(merged_data, interval_minutes, max_lag_hours=3, lag_st
     
     # Find optimal lag
     optimal_lag = max(correlations, key=correlations.get)
-    
+    """
     # Plot results
     plt.figure(figsize=(10, 5))
     lags = list(correlations.keys())
@@ -133,7 +133,7 @@ def find_optimal_rain_lag(merged_data, interval_minutes, max_lag_hours=3, lag_st
     plt.legend()
     plt.tight_layout()
     plt.show()
-    
+    """
     print(f"\nOptimal precipitation lag: {optimal_lag} minutes")
     
     return optimal_lag, correlations
@@ -240,8 +240,8 @@ def build_sgpr_model(X_train, Y_train, time_std_dev, threshold_scaled):
         inducing_variable=Z,
         kernel=kernel, mean_function=None)
         
-    # freezing inducing points to preserve the smart initialization
-    gpflow.set_trainable(model.inducing_variable, False)
+    # freezing inducing points / or letting them be trainable with the optimiser 
+    gpflow.set_trainable(model.inducing_variable, True)
     
     # optimisation 
     opt = gpflow.optimizers.Scipy()
