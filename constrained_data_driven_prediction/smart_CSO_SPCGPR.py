@@ -48,7 +48,7 @@ test_end_time = train_end_time + pd.Timedelta(hours=test_hours)
 timeinterval = 15 # minutes 
 
 # inducing points 
-M = 200
+M = 500
 
 # constraints 
 mean_value = 0 # L/s
