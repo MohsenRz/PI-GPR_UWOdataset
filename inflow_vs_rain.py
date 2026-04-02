@@ -19,8 +19,8 @@ precipitation = pd.read_pickle(
 WWTP_inflow['timestamp'] = pd.to_datetime(WWTP_inflow['timestamp'])
 precipitation['timestamp'] = pd.to_datetime(precipitation['timestamp'])
 
-plot_days = 6
-start_date = pd.to_datetime("2019-01-01 00:00:00")
+plot_days = 5
+start_date = pd.to_datetime("2019-10-25 00:00:00")
 
 # Plotting
 fig, ax1 = plt.subplots(figsize=(12, 6))

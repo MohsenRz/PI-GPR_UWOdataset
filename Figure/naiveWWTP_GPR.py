@@ -1,5 +1,6 @@
 """ 
 making a Gaussian Process Regression model for WWTP data prediction
+naive model with no constraints on the kernel hyperparameters, only using time and precipitation as input features + kernel fixed model 
 sensor data is used 
 Author: Mohsen 
 created at: 27/11/2025
@@ -17,6 +18,10 @@ import time
 from scipy.stats import norm
 from pathlib import Path
 import tensorflow_probability as tfp
+
+# Set font type globally
+plt.rcParams['font.family'] = 'Times New Roman'
+plt.rcParams['font.size'] = 12
 
 ## Load Data
 BASE = Path(__file__).parent.parent
@@ -117,8 +122,8 @@ def find_optimal_rain_lag(merged_data, interval_minutes, max_lag_hours=2, lag_st
     plt.axvline(x=optimal_lag, color='r', linestyle='--', 
                 label=f'Optimal lag: {optimal_lag} min')
     plt.xlabel('Precipitation Accumulation Window (minutes)', fontsize=12)
-    plt.ylabel('Cross-correlation with WWTP Inflow', fontsize=12)
-    plt.title('Cross-Correlation Analysis: Rain Lag vs WWTP Response', fontsize=14)
+    plt.ylabel('Cross-correlation with CSO Inflow', fontsize=12)
+    plt.title('Cross-Correlation Analysis: Rain Lag vs CSO Response', fontsize=14)
     plt.grid(True, alpha=0.3)
     plt.legend()
     plt.tight_layout()
@@ -151,45 +156,51 @@ def preparing_data(merged_data, start_time, interval_minutes=timeinterval, lag_m
         
     return X_multi, Y, timestamps
 
-def build_gpr_model(X_train, Y_train, time_std_dev):
+def build_gpr_model(X_train, Y_train, time_std_dev, kernel_type='naive'):
     """
     Build and train GPR model
     X_train: Scaled training data 
     Y_train: Scaled target data
     time_std_dev: the scaling factor (std) of the Time Column from scalara_X.scale_[0]
+    kernel_type: 'naive' for simple SquaredExponential, 'designed' for complex kernel
     """ 
     minutes_in_day = 24 * 60
     scaled_period = minutes_in_day / time_std_dev  # Adjust period based on scaling
     print(f"Scaled period for daily cycle: {scaled_period}")
-    ### daily kernel 
-    kernel_daily = gpflow.kernels.Periodic(gpflow.kernels.SquaredExponential(active_dims=[0], variance=1), 
-                                            period=scaled_period)   # daily periodicity
-    bounded_transform_daily = tfp.bijectors.Sigmoid(
-        low=tf.constant(scaled_period/(24*60), dtype=tf.float64), # at least one minute
-        high=tf.constant(scaled_period/3, dtype=tf.float64))    # at most 8 hours 
-    kernel_daily.base_kernel.lengthscales = gpflow.Parameter(0.01, transform=bounded_transform_daily)
-    ### trend kernel 
-    kernel_long_term = gpflow.kernels.RBF(variance=1.0, active_dims=[0])
-    bounded_transform_long_term = tfp.bijectors.Sigmoid(
-        low=tf.constant(4.0 * scaled_period, dtype=tf.float64),
-        high=tf.constant(8.0 * scaled_period, dtype=tf.float64))
-    kernel_long_term.lengthscales = gpflow.Parameter(7.0 * scaled_period, transform=bounded_transform_long_term)
-    ### rain kernel 
-    kernel_rain = gpflow.kernels.Matern12(variance=1, active_dims=[1])
-    bounded_transform_rain = tfp.bijectors.Sigmoid(
-        low=tf.constant(0.1, dtype=tf.float64), 
-        high=tf.constant(1, dtype=tf.float64)) 
-    kernel_rain.lengthscales = gpflow.Parameter(0.5, transform=bounded_transform_rain)
-    ### noise kernel
-    kernel_noise = gpflow.kernels.White()
     
-    kernel_daily.active_dims = [0]
-    kernel_long_term.active_dims = [0]
-    kernel_rain.active_dims = [1]   
-    
-    gpflow.set_trainable(kernel_daily.period, False)
-    
-    kernel = kernel_daily * kernel_long_term + kernel_rain  # kernel noise is removed because the likelihhod variance takes the overal noise
+    if kernel_type == 'naive':
+        # Naive kernel: simple SquaredExponential
+        kernel = gpflow.kernels.SquaredExponential()
+        print(f"Using NAIVE kernel: SquaredExponential")
+    else:
+        # Designed kernel: Periodic + RBF + Matern12
+        ### daily kernel 
+        kernel_daily = gpflow.kernels.Periodic(gpflow.kernels.SquaredExponential(active_dims=[0], variance=1), 
+                                                period=scaled_period)   # daily periodicity
+        bounded_transform_daily = tfp.bijectors.Sigmoid(
+            low=tf.constant(scaled_period/(24*60), dtype=tf.float64), # at least one minute
+            high=tf.constant(scaled_period/3, dtype=tf.float64))    # at most 8 hours 
+        kernel_daily.base_kernel.lengthscales = gpflow.Parameter(0.01, transform=bounded_transform_daily)
+        ### trend kernel 
+        kernel_long_term = gpflow.kernels.RBF(variance=1.0, active_dims=[0])
+        bounded_transform_long_term = tfp.bijectors.Sigmoid(
+            low=tf.constant(4.0 * scaled_period, dtype=tf.float64),
+            high=tf.constant(8.0 * scaled_period, dtype=tf.float64))
+        kernel_long_term.lengthscales = gpflow.Parameter(7.0 * scaled_period, transform=bounded_transform_long_term)
+        ### rain kernel 
+        kernel_rain = gpflow.kernels.Matern12(variance=1, active_dims=[1])
+        bounded_transform_rain = tfp.bijectors.Sigmoid(
+            low=tf.constant(0.1, dtype=tf.float64), 
+            high=tf.constant(1, dtype=tf.float64)) 
+        kernel_rain.lengthscales = gpflow.Parameter(0.5, transform=bounded_transform_rain)
+        
+        kernel_daily.active_dims = [0]
+        kernel_long_term.active_dims = [0]
+        kernel_rain.active_dims = [1]   
+        
+        gpflow.set_trainable(kernel_daily.period, False)
+        kernel = kernel_daily * kernel_long_term + kernel_rain
+        print(f"Using DESIGNED kernel: Periodic(SquaredExponential) * RBF + Matern12")
     
     X_train_tf = tf.convert_to_tensor(X_train, dtype=tf.float64)
     Y_train_tf = tf.convert_to_tensor(Y_train, dtype=tf.float64)
@@ -282,74 +293,192 @@ def plot_results(timestamps_train, Y_train, Y_pred_train, std_train,
     
     plt.tight_layout()
     plt.show()
+
+def plot_comparison(timestamps_train_naive, Y_train, Y_pred_train_naive, std_train_naive,
+                    timestamps_test_naive, Y_test, Y_pred_test_naive, std_test_naive,
+                    Y_pred_train_designed, std_train_designed,
+                    Y_pred_test_designed, std_test_designed):
+    """
+    Plot side-by-side comparison of naive vs designed kernel
+    """
+    fig, (ax_naive, ax_designed) = plt.subplots(1, 2, figsize=(16, 6))
+    
+    # ============== NAIVE KERNEL ==============
+    ax_naive.scatter(timestamps_train_naive, Y_train.ravel(), c='blue', s=15, 
+                     label='Training Data', alpha=0.5, zorder=3)
+    ax_naive.plot(timestamps_train_naive, Y_pred_train_naive.ravel(), 'green', 
+                  label='GPR Fit (Training)', linewidth=2, zorder=4)
+    ax_naive.fill_between(timestamps_train_naive, 
+                          Y_pred_train_naive.ravel() - 1.96 * std_train_naive.ravel(),
+                          Y_pred_train_naive.ravel() + 1.96 * std_train_naive.ravel(),
+                          alpha=0.2, color='green', label='95% CI (Training)', zorder=2)
+    
+    ax_naive.scatter(timestamps_test_naive, Y_test.ravel(), c='orange', s=15,
+                     label='Test Data (Actual)', alpha=0.7, zorder=3)
+    ax_naive.plot(timestamps_test_naive, Y_pred_test_naive.ravel(), 'red', 
+                  label='GPR Prediction (Test)', linewidth=2, zorder=4)
+    ax_naive.fill_between(timestamps_test_naive,
+                          Y_pred_test_naive.ravel() - 1.96 * std_test_naive.ravel(),
+                          Y_pred_test_naive.ravel() + 1.96 * std_test_naive.ravel(),
+                          alpha=0.2, color='red', label='95% CI (Test)', zorder=2)
+    
+    ax_naive.axvline(x=timestamps_train_naive[-1], color='black', linestyle='--', 
+                     linewidth=1.5, label='Train/Test Split', zorder=5)
+    
+    ax_naive.set_xlabel('Date', fontsize=12, fontfamily='Times New Roman')
+    ax_naive.set_ylabel('WWTP Inflow (L/s)', fontsize=12, fontfamily='Times New Roman')
+    ax_naive.set_title('Naive Kernel (SquaredExponential)', fontsize=13, fontweight='bold', fontfamily='Times New Roman')
+    ax_naive.legend(fontsize=10, loc='best', prop={'family': 'Times New Roman'})
+    ax_naive.grid(True, alpha=0.3)
+    ax_naive.xaxis.set_major_formatter(mdates.DateFormatter('%Y-%m-%d'))
+    ax_naive.xaxis.set_major_locator(mdates.DayLocator(interval=2))
+    ax_naive.tick_params(axis='x', rotation=45)
+    
+    # ============== DESIGNED KERNEL ==============
+    ax_designed.scatter(timestamps_train_naive, Y_train.ravel(), c='blue', s=15, 
+                        label='Training Data', alpha=0.5, zorder=3)
+    ax_designed.plot(timestamps_train_naive, Y_pred_train_designed.ravel(), 'green', 
+                     label='GPR Fit (Training)', linewidth=2, zorder=4)
+    ax_designed.fill_between(timestamps_train_naive, 
+                             Y_pred_train_designed.ravel() - 1.96 * std_train_designed.ravel(),
+                             Y_pred_train_designed.ravel() + 1.96 * std_train_designed.ravel(),
+                             alpha=0.2, color='green', label='95% CI (Training)', zorder=2)
+    
+    ax_designed.scatter(timestamps_test_naive, Y_test.ravel(), c='orange', s=15,
+                        label='Test Data (Actual)', alpha=0.7, zorder=3)
+    ax_designed.plot(timestamps_test_naive, Y_pred_test_designed.ravel(), 'red', 
+                     label='GPR Prediction (Test)', linewidth=2, zorder=4)
+    ax_designed.fill_between(timestamps_test_naive,
+                             Y_pred_test_designed.ravel() - 1.96 * std_test_designed.ravel(),
+                             Y_pred_test_designed.ravel() + 1.96 * std_test_designed.ravel(),
+                             alpha=0.2, color='red', label='95% CI (Test)', zorder=2)
+    
+    ax_designed.axvline(x=timestamps_train_naive[-1], color='black', linestyle='--', 
+                        linewidth=1.5, label='Train/Test Split', zorder=5)
+    
+    ax_designed.set_xlabel('Date', fontsize=12, fontfamily='Times New Roman')
+    ax_designed.set_ylabel('WWTP Inflow (L/s)', fontsize=12, fontfamily='Times New Roman')
+    ax_designed.set_title('Designed Kernel (Periodic*RBF + Matern12)', fontsize=13, fontweight='bold', fontfamily='Times New Roman')
+    ax_designed.legend(fontsize=10, loc='best', prop={'family': 'Times New Roman'})
+    ax_designed.grid(True, alpha=0.3)
+    ax_designed.xaxis.set_major_formatter(mdates.DateFormatter('%Y-%m-%d'))
+    ax_designed.xaxis.set_major_locator(mdates.DayLocator(interval=2))
+    ax_designed.tick_params(axis='x', rotation=45)
+    
+    fig.suptitle(f'GPR Model Comparison: Naive vs Designed Kernel (Train: {train_days} days, Test: {test_hours} hours)', 
+                 fontsize=14, fontweight='bold', fontfamily='Times New Roman')
+    plt.tight_layout()
+    
+    # Save the comparison figure
+    output_path = Path(__file__).parent / "WWTP_GPR_Kernel_Comparison.png"
+    fig.savefig(output_path, dpi=300, bbox_inches='tight')
+    print(f"\nComparison figure saved to: {output_path}")
+    
+    plt.show()
     
 def main():
     total_start = time.perf_counter()
     print("="*70)
-    print("GPR Model for WWTP Inflow Prediction")
+    print("GPR Model for WWTP Inflow Prediction - Kernel Comparison")
     print("="*70)
     
     # Find optimal lag
     print("\nPerforming cross-correlation analysis...")
     optimal_lag, correlations = find_optimal_rain_lag(merged_train, timeinterval)
     
-    # Prepare training data (Pass interval to calc window size)
+    # Prepare training data
     X_train, Y_train, timestamps_train = preparing_data(merged_train, train_start_time, timeinterval, lag_minutes=optimal_lag)
+    X_test, Y_test, timestamps_test = preparing_data(merged_test, train_start_time, timeinterval, lag_minutes=optimal_lag)
     
     # Standardize
     scaler_X = StandardScaler()
     scaler_Y = StandardScaler()
     X_train_scaled = scaler_X.fit_transform(X_train)
     Y_train_scaled = scaler_Y.fit_transform(Y_train)
-    
-    print("\nTraining GPR model...")
-    # Pass Time Std Dev for Period Calculation
-    model = build_gpr_model(X_train_scaled, Y_train_scaled, scaler_X.scale_[0])
-    
-    # --- PREDICTION ON TRAIN ---
-    X_train_tf = tf.convert_to_tensor(X_train_scaled, dtype=tf.float64)
-    mean_train_sc, var_train_y_sc = model.predict_y(X_train_tf)
-    _, var_train_f_sc = model.predict_f(X_train_tf)
-    
-    Y_pred_train = scaler_Y.inverse_transform(mean_train_sc.numpy())
-    std_train_y = np.sqrt(var_train_y_sc.numpy()) * scaler_Y.scale_
-    std_train_f = np.sqrt(var_train_f_sc.numpy()) * scaler_Y.scale_
-    
-    # --- PREDICTION ON TEST ---
-    X_test, Y_test, timestamps_test = preparing_data(merged_test, train_start_time, timeinterval, lag_minutes=optimal_lag)
     X_test_scaled = scaler_X.transform(X_test)
     
-    print(f"\nGenerating {test_hours}-hour predictions...")
+    # ============== NAIVE KERNEL ==============
+    print("\n" + "="*70)
+    print("TRAINING NAIVE KERNEL MODEL")
+    print("="*70)
+    model_naive = build_gpr_model(X_train_scaled, Y_train_scaled, scaler_X.scale_[0], kernel_type='naive')
+    
+    # Predictions with naive kernel
+    X_train_tf = tf.convert_to_tensor(X_train_scaled, dtype=tf.float64)
     X_test_tf = tf.convert_to_tensor(X_test_scaled, dtype=tf.float64)
     
-    mean_test_sc, var_test_y_sc = model.predict_y(X_test_tf)
-    _, var_test_f_sc = model.predict_f(X_test_tf)
+    mean_train_naive_sc, var_train_naive_sc = model_naive.predict_y(X_train_tf)
+    Y_pred_train_naive = scaler_Y.inverse_transform(mean_train_naive_sc.numpy())
+    std_train_naive = np.sqrt(var_train_naive_sc.numpy()) * scaler_Y.scale_
     
-    Y_pred_test = scaler_Y.inverse_transform(mean_test_sc.numpy())
-    std_test_y = np.sqrt(var_test_y_sc.numpy()) * scaler_Y.scale_
-    std_test_f = np.sqrt(var_test_f_sc.numpy()) * scaler_Y.scale_
+    mean_test_naive_sc, var_test_naive_sc = model_naive.predict_y(X_test_tf)
+    Y_pred_test_naive = scaler_Y.inverse_transform(mean_test_naive_sc.numpy())
+    std_test_naive = np.sqrt(var_test_naive_sc.numpy()) * scaler_Y.scale_
     
-    # --- COMPARISON TABLE ---
-    train_metrics = model_evaluation(Y_train, Y_pred_train, std_train_y)
-    test_metrics = model_evaluation(Y_test, Y_pred_test, std_test_y)
-    
-    results_df = pd.DataFrame({
-        'Training Set': train_metrics,
-        'Test Set': test_metrics
-    })
+    # Evaluation for naive kernel
+    train_metrics_naive = model_evaluation(Y_train, Y_pred_train_naive, std_train_naive)
+    test_metrics_naive = model_evaluation(Y_test, Y_pred_test_naive, std_test_naive)
     
     print("\n" + "="*50)
-    print("MODEL PERFORMANCE")
+    print("NAIVE KERNEL - MODEL PERFORMANCE")
     print("="*50)
-    print(results_df.round(4))
+    results_naive = pd.DataFrame({
+        'Training Set': train_metrics_naive,
+        'Test Set': test_metrics_naive
+    })
+    print(results_naive.round(4))
     print("="*50)
+    
+    # ============== DESIGNED KERNEL ==============
+    print("\n" + "="*70)
+    print("TRAINING DESIGNED KERNEL MODEL")
+    print("="*70)
+    model_designed = build_gpr_model(X_train_scaled, Y_train_scaled, scaler_X.scale_[0], kernel_type='designed')
+    
+    # Predictions with designed kernel
+    mean_train_designed_sc, var_train_designed_sc = model_designed.predict_y(X_train_tf)
+    Y_pred_train_designed = scaler_Y.inverse_transform(mean_train_designed_sc.numpy())
+    std_train_designed = np.sqrt(var_train_designed_sc.numpy()) * scaler_Y.scale_
+    
+    mean_test_designed_sc, var_test_designed_sc = model_designed.predict_y(X_test_tf)
+    Y_pred_test_designed = scaler_Y.inverse_transform(mean_test_designed_sc.numpy())
+    std_test_designed = np.sqrt(var_test_designed_sc.numpy()) * scaler_Y.scale_
+    
+    # Evaluation for designed kernel
+    train_metrics_designed = model_evaluation(Y_train, Y_pred_train_designed, std_train_designed)
+    test_metrics_designed = model_evaluation(Y_test, Y_pred_test_designed, std_test_designed)
+    
+    print("\n" + "="*50)
+    print("DESIGNED KERNEL - MODEL PERFORMANCE")
+    print("="*50)
+    results_designed = pd.DataFrame({
+        'Training Set': train_metrics_designed,
+        'Test Set': test_metrics_designed
+    })
+    print(results_designed.round(4))
+    print("="*50)
+    
+    # ============== COMPARISON TABLE ==============
+    print("\n" + "="*70)
+    print("COMPARISON: NAIVE vs DESIGNED KERNEL")
+    print("="*70)
+    comparison_df = pd.DataFrame({
+        'Naive Kernel (Test)': test_metrics_naive,
+        'Designed Kernel (Test)': test_metrics_designed,
+        'Difference': {k: test_metrics_designed[k] - test_metrics_naive[k] for k in test_metrics_naive}
+    })
+    print(comparison_df.round(4))
+    print("="*70)
     
     total_time = time.perf_counter() - total_start
     print(f"\nTotal execution time: {total_time:.1f} seconds")
-    print("Prediction complete!")
-    #--- PLOTTING ---
-    plot_results(timestamps_train, Y_train, Y_pred_train, std_train_y,
-                 timestamps_test, Y_test, Y_pred_test, std_test_y)
+    
+    # ============== SIDE-BY-SIDE PLOT ==============
+    print("\nGenerating side-by-side comparison plot...")
+    plot_comparison(timestamps_train, Y_train, Y_pred_train_naive, std_train_naive,
+                    timestamps_test, Y_test, Y_pred_test_naive, std_test_naive,
+                    Y_pred_train_designed, std_train_designed,
+                    Y_pred_test_designed, std_test_designed)
     
     
 
