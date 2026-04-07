@@ -1,10 +1,10 @@
 """ 
 making a Gaussian Process Regression model for WWTP data prediction
 sensor data is used 
-poitn of interest is added to the plot which shows the full distribution of the prediction for that specific timestamp and compares it with the actual value.
+mean function is created based on the SWMM data and added to the model
+coonstraints are added on this code 
 Author: Mohsen 
-created at: 27/11/2025
-updated at: 01/04/2026
+updated at: 07/04/2026
 """
 
 import pandas as pd 
@@ -15,9 +15,10 @@ import gpflow
 from sklearn.preprocessing import StandardScaler
 import matplotlib.dates as mdates
 import time
-from scipy.stats import truncnorm, norm 
+from scipy.stats import norm, truncnorm
 from pathlib import Path
 import tensorflow_probability as tfp
+import pickle
 
 ## Load Data
 BASE = Path(__file__).parent.parent
@@ -28,6 +29,7 @@ WWTP_inflow = pd.read_pickle(
     data_path / "inflow_WWTP" / "sensor_bf_plsZUL1100_inflow_ara_2019-01-01_to_2019-12-31.pkl")
 precipitation = pd.read_pickle(
     data_path / "precipitation" / "sensor_bn_r02_school_chatzenrainstr_2019_cleaned.pkl")
+mean_data = pd.read_csv( BASE / "faf_model" / "DWF_Mean_Function_WWTP_in_Seconds.csv")
 
 ## Preprocess Data
 WWTP_inflow['timestamp'] = pd.to_datetime(WWTP_inflow['timestamp'])
@@ -42,6 +44,10 @@ train_end_time = train_start_time + pd.Timedelta(days=train_days)
 test_hours = 5 * 24  # Hours to predict
 test_end_time = train_end_time + pd.Timedelta(hours=test_hours)
 timeinterval = 15 # minutes 
+
+# constraints 
+min_inflow = 0.0  # Minimum WWTP inflow (L/s)
+max_inflow = 180.0  # Maximum WWTP inflow (L/s) based on the throttle setting
 
 WWTP_inflow_train = WWTP_inflow[(WWTP_inflow['timestamp'] >= train_start_time) & (WWTP_inflow['timestamp'] <= train_end_time)]
 precipitation_train = precipitation[(precipitation['timestamp'] >= train_start_time) & (precipitation['timestamp'] <= train_end_time)]
@@ -67,6 +73,11 @@ merged_test = WWTP_test_resampled.join(precipitation_test_resampled,
                                        lsuffix='_inflow', rsuffix='_precipitation', how='inner')
 merged_train.dropna(inplace=True)
 merged_test.dropna(inplace=True)
+inflow = merged_train.filter(like='inflow').iloc[:, 0]
+average_inflow = inflow.mean()
+p5 = inflow.quantile(0.05)
+p95 = inflow.quantile(0.95)
+average_inflow_trimmed = inflow[(inflow >= p5) & (inflow <= p95)].mean()
 
 print(f"Training period: {train_start_time} to {train_end_time} ({train_days} days)")
 print(f"Test period: {train_end_time} to {test_end_time} ({test_hours} hours)")
@@ -74,6 +85,7 @@ print(f"Training samples: {len(merged_train)}")
 print(f"Test samples: {len(merged_test)}")
 print(f"Data statistics: mean inflow = {merged_train.filter(like='inflow').mean().values[0]:.2f} L/s,\
       mean precipitation = {merged_train.filter(like='precipitation').mean().values[0]*24/timeinterval:.2f} mm/day")
+print(f"Trimmed mean inflow (5-95th percentile): {average_inflow_trimmed:.2f} L/s")
 
 def find_optimal_rain_lag(merged_data, interval_minutes, max_lag_hours=2, lag_step_minutes=15):
     """
@@ -158,12 +170,83 @@ def preparing_data(merged_data, start_time, interval_minutes=timeinterval, lag_m
         
     return X_multi, Y, timestamps
 
-def build_gpr_model(X_train, Y_train, time_std_dev):
+def create_lookup_function(pattern_values, time_mean, time_scale):
+    """
+    Returns a TensorFlow function that looks up the value in 'pattern_values'
+    based on the input time X.
+    """
+    # Ensure input is 1D tensor
+    pattern_tensor = tf.constant(pattern_values.reshape(-1), dtype=tf.float64)
+    num_points = tf.cast(tf.shape(pattern_tensor)[0], tf.float64)
+
+    mu = tf.cast(time_mean, tf.float64)
+    sigma = tf.cast(time_scale, tf.float64)
+    day_minutes = tf.constant(24.0 * 60.0, dtype=tf.float64) # Assuming minutes
+
+    def _mean_func(X):
+        # Un-scale time
+        t_scaled = X[:, 0]
+        t_physical = (t_scaled * sigma) + mu
+
+        # Wrap to [0, day_len)
+        t_mod = tf.math.floormod(t_physical, day_minutes)
+
+        # Convert to Index [0, N-1]
+        indices = (t_mod / day_minutes) * (num_points - 1.0)
+
+        # Interpolate
+        val = tfp.math.interp_regular_1d_grid(
+            x=indices,
+            x_ref_min=0.0,
+            x_ref_max=num_points - 1.0,
+            y_ref=pattern_tensor,
+            fill_value='extrapolate'
+        )
+
+        return tf.reshape(val, (-1, 1))
+
+    return _mean_func
+
+def mean_function(mean_data, scaler_Y, timestep, average_inflow):
+    """
+    create a mean function based on the SWMM data 
+    the mean function is normalised and modified based on the timeintervals 
+    the mean is returned to the model with multiplying to the average flow values of the training data
+    """
+    timesteps_seconds = timestep * 60 
+    mean_times = mean_data['Time_Seconds'].values
+    mean_values = mean_data['Mean_WWTP_Inflow'].values
+    # Create 1-day pattern at the desired timestep interval
+    seconds_in_day = 24 * 60 * 60
+    target_times = np.arange(0, seconds_in_day, timesteps_seconds)
+    
+    # Find closest values in mean_data for each target timestep
+    mean_pattern = []
+    for t in target_times:
+        idx = np.argmin(np.abs(mean_times - t))
+        mean_pattern.append(mean_values[idx])
+    
+    mean_pattern = np.array(mean_pattern)
+    
+    # turn into training data scale
+    mean_pattern_scaled = mean_pattern * average_inflow / np.mean(mean_pattern)
+    
+    # Create GPFlow constant mean function
+    # Reshape to column vector as GPFlow expects (n, 1)
+    mean_values_reshaped = mean_pattern_scaled.reshape(-1, 1)
+    
+    # Return as GPFlow Constant mean function
+    daily_pattern = scaler_Y.transform(mean_values_reshaped)
+    
+    return daily_pattern 
+
+def build_gpr_model(X_train, Y_train, time_std_dev, mean_func=None):
     """
     Build and train GPR model
     X_train: Scaled training data 
     Y_train: Scaled target data
     time_std_dev: the scaling factor (std) of the Time Column from scalara_X.scale_[0]
+    mean function is added 
     """ 
     minutes_in_day = 24 * 60
     scaled_period = minutes_in_day / time_std_dev  # Adjust period based on scaling
@@ -172,15 +255,22 @@ def build_gpr_model(X_train, Y_train, time_std_dev):
     kernel_daily = gpflow.kernels.Periodic(gpflow.kernels.SquaredExponential(active_dims=[0], variance=1), 
                                             period=scaled_period)   # daily periodicity
     bounded_transform_daily = tfp.bijectors.Sigmoid(
-        low=tf.constant(scaled_period/(24*60), dtype=tf.float64), # at least one minute
-        high=tf.constant(scaled_period/3, dtype=tf.float64))    # at most 8 hours 
+        low=tf.constant(scaled_period/(24), dtype=tf.float64),  # at least one hour
+        high=tf.constant(scaled_period/2, dtype=tf.float64))    # at most 12 hours 
     kernel_daily.base_kernel.lengthscales = gpflow.Parameter(0.01, transform=bounded_transform_daily)
     ### trend kernel 
     kernel_long_term = gpflow.kernels.RBF(variance=1.0, active_dims=[0])
     bounded_transform_long_term = tfp.bijectors.Sigmoid(
-        low=tf.constant(4.0 * scaled_period, dtype=tf.float64),
+        low=tf.constant(2.0 * scaled_period, dtype=tf.float64),
         high=tf.constant(8.0 * scaled_period, dtype=tf.float64))
     kernel_long_term.lengthscales = gpflow.Parameter(7.0 * scaled_period, transform=bounded_transform_long_term)
+    ## short term kernel 
+    kernel_short_term = gpflow.kernels.Matern32(variance=0.5, active_dims=[0])
+    bounded_transform_short_term = tfp.bijectors.Sigmoid(
+        low=tf.constant(scaled_period / 24, dtype=tf.float64),  # ~1 hour
+        high=tf.constant(scaled_period / 4, dtype=tf.float64))  # ~6 hours
+    kernel_short_term.lengthscales = gpflow.Parameter(scaled_period/12, transform=bounded_transform_short_term)
+
     ### rain kernel 
     kernel_rain = gpflow.kernels.Matern12(variance=1, active_dims=[1])
     bounded_transform_rain = tfp.bijectors.Sigmoid(
@@ -191,18 +281,19 @@ def build_gpr_model(X_train, Y_train, time_std_dev):
     kernel_noise = gpflow.kernels.White()
     
     kernel_daily.active_dims = [0]
+    kernel_short_term.active_dims = [0]
     kernel_long_term.active_dims = [0]
     kernel_rain.active_dims = [1]   
     
     gpflow.set_trainable(kernel_daily.period, False)
     
-    kernel = kernel_daily * kernel_long_term + kernel_rain  # kernel noise is removed because the likelihhod variance takes the overal noise
+    kernel = kernel_long_term * kernel_daily + kernel_rain  # kernel noise is removed because the likelihhod variance takes the overal noise
     
     X_train_tf = tf.convert_to_tensor(X_train, dtype=tf.float64)
     Y_train_tf = tf.convert_to_tensor(Y_train, dtype=tf.float64)
     
     model = gpflow.models.GPR(data=(X_train_tf, Y_train_tf), 
-                              kernel=kernel, mean_function=None)
+                              kernel=kernel, mean_function=mean_func)
     #optimise hyperparameters
     opt = gpflow.optimizers.Scipy()
     opt.minimize(model.training_loss, 
@@ -213,6 +304,38 @@ def build_gpr_model(X_train, Y_train, time_std_dev):
     gpflow.utilities.print_summary(model)
  
     return model
+
+def prediction (model, X_scaled, scaler_Y, min_val=None, max_val=None):
+    """
+    Make predictions with the GPR model
+    constraints will be applied here 
+    """
+    X_tf = tf.convert_to_tensor(X_scaled, dtype=tf.float64)
+    mean_sc, var_y_sc = model.predict_y(X_tf)
+    _, var_f_sc = model.predict_f(X_tf)
+    
+    Y_pred = scaler_Y.inverse_transform(mean_sc.numpy())
+    std_y = np.sqrt(var_y_sc.numpy()) * scaler_Y.scale_
+    std_f = np.sqrt(var_f_sc.numpy()) * scaler_Y.scale_
+    
+    if min_val is None and max_val is None:
+        return Y_pred, std_y, std_f
+    
+    # I use truncated Gaussian distribution for the test predictions only 
+    if min_val is not None:
+        a = (min_val - Y_pred) / std_y
+    else: 
+        a = -np.inf
+    
+    if max_val is not None:
+        b = (max_val - Y_pred) / std_y
+    else:
+        b = np.inf
+    
+    Y_pred_constrained = truncnorm.mean(a=a, b=b, loc=Y_pred, scale=std_y)
+    std_y_constrained = truncnorm.std(a=a, b=b, loc=Y_pred, scale=std_y)
+        
+    return Y_pred_constrained, std_y_constrained, std_f
 
 def model_evaluation(Y_true, Y_pred, std_pred):
     """
@@ -250,6 +373,7 @@ def plot_results(timestamps_train, Y_train, Y_pred_train, std_train,
     Plot training and test results
     shows the bounds of 95% confidence interval and the actual data points for both train and test sets.
     If sample_date is provided, it will also plot the PDF for that specific timestamp.
+    CIs are clipped if constraints exist 
     """
     fig, ax = plt.subplots(figsize=(12, 6))
     
@@ -268,9 +392,13 @@ def plot_results(timestamps_train, Y_train, Y_pred_train, std_train,
                label='Test Data (Actual)', alpha=0.7, zorder=3)
     ax.plot(timestamps_test, Y_pred_test.ravel(), 'red', 
             label='GPR Prediction (Test)', linewidth=2, zorder=4)
-    ax.fill_between(timestamps_test,
-                    Y_pred_test.ravel() - 1.96 * std_test.ravel(),
-                    Y_pred_test.ravel() + 1.96 * std_test.ravel(),
+    lower_test = Y_pred_test.ravel() - 1.96 * std_test.ravel()
+    upper_test = Y_pred_test.ravel() + 1.96 * std_test.ravel()
+    if min_inflow is not None:
+        lower_test = np.maximum(lower_test, min_inflow)
+    if max_inflow is not None:
+        upper_test = np.minimum(upper_test, max_inflow)
+    ax.fill_between(timestamps_test, lower_test, upper_test,
                     alpha=0.2, color='red', label='95% CI (Test)', zorder=2)
     
     # Add vertical line separating train/test
@@ -298,7 +426,7 @@ def plot_results(timestamps_train, Y_train, Y_pred_train, std_train,
     
     plt.tight_layout()
     plt.show()
-    
+
 def plot_point_of_interest(target_date_str, timestamps, X_scaled, model, 
                            scaler_Y, Y_actual, min_val=None, max_val=None):
     """
@@ -380,7 +508,6 @@ def plot_point_of_interest(target_date_str, timestamps, X_scaled, model,
     plt.tight_layout()
     plt.show()
 
-
 def main():
     total_start = time.perf_counter()
     print("="*70)
@@ -406,18 +533,22 @@ def main():
     X_train_scaled = scaler_X.fit_transform(X_train)
     Y_train_scaled = scaler_Y.fit_transform(Y_train)
     
+    # preparing the mean function 
+    daily_pattern = mean_function(mean_data, scaler_Y, timestep=timeinterval, 
+                                  average_inflow=average_inflow_trimmed)
+    # lookup function for mean
+    time_mean = scaler_X.mean_[0]
+    time_scale = scaler_X.scale_[0]
+    
+    mean_func = create_lookup_function(daily_pattern, time_mean, time_scale)
+    
     print("\nTraining GPR model...")
     # Pass Time Std Dev for Period Calculation
-    model = build_gpr_model(X_train_scaled, Y_train_scaled, scaler_X.scale_[0])
+    model = build_gpr_model(X_train_scaled, Y_train_scaled, scaler_X.scale_[0], mean_func=mean_func)
     
     # --- PREDICTION ON TRAIN ---
-    X_train_tf = tf.convert_to_tensor(X_train_scaled, dtype=tf.float64)
-    mean_train_sc, var_train_y_sc = model.predict_y(X_train_tf)
-    _, var_train_f_sc = model.predict_f(X_train_tf)
-    
-    Y_pred_train = scaler_Y.inverse_transform(mean_train_sc.numpy())
-    std_train_y = np.sqrt(var_train_y_sc.numpy()) * scaler_Y.scale_
-    std_train_f = np.sqrt(var_train_f_sc.numpy()) * scaler_Y.scale_
+    Y_pred_train, std_train_y, std_train_f = prediction(model, X_train_scaled, scaler_Y,
+                                                        min_val=None, max_val=None)
     
     # --- PREDICTION ON TEST ---
     X_test, Y_test, timestamps_test = preparing_data(merged_test, train_start_time, timeinterval, 
@@ -425,14 +556,9 @@ def main():
     X_test_scaled = scaler_X.transform(X_test)
     
     print(f"\nGenerating {test_hours}-hour predictions...")
-    X_test_tf = tf.convert_to_tensor(X_test_scaled, dtype=tf.float64)
     
-    mean_test_sc, var_test_y_sc = model.predict_y(X_test_tf)
-    _, var_test_f_sc = model.predict_f(X_test_tf)
-    
-    Y_pred_test = scaler_Y.inverse_transform(mean_test_sc.numpy())
-    std_test_y = np.sqrt(var_test_y_sc.numpy()) * scaler_Y.scale_
-    std_test_f = np.sqrt(var_test_f_sc.numpy()) * scaler_Y.scale_
+    Y_pred_test, std_test_y, std_test_f = prediction(model, X_test_scaled, scaler_Y, 
+                                                     min_val=min_inflow, max_val=max_inflow)
     
     # --- COMPARISON TABLE ---
     train_metrics = model_evaluation(Y_train, Y_pred_train, std_train_y)
@@ -453,15 +579,41 @@ def main():
     print(f"\nTotal execution time: {total_time:.1f} seconds")
     print("Prediction complete!")
     #--- PLOTTING ---
-    sample_date = str(train_end_time + pd.Timedelta(hours=36))  # it shows the 36th hour of the predictions
+    sample_date = str(train_end_time + pd.Timedelta(hours=12))  # it shows the 12th hour of the predictions
     plot_results(timestamps_train, Y_train, Y_pred_train, std_train_y,
-                 timestamps_test, Y_test, Y_pred_test, std_test_y, 
-                 min_inflow=None, max_inflow=None, sample_date=sample_date)
-    
+                 timestamps_test, Y_test, Y_pred_test, std_test_y,
+                 min_inflow=min_inflow, max_inflow=max_inflow, sample_date=sample_date)
     plot_point_of_interest(sample_date, timestamps_test,
                            X_test_scaled, model, scaler_Y,
-                           Y_test, min_val=None, max_val=None)
-
+                           Y_test, min_val=min_inflow, max_val=max_inflow)
+    
+    # saving figures for a later use 
+    results_data = {
+        'train': {
+            'time': timestamps_train,
+            'actual': Y_train.ravel(),
+            'pred': Y_pred_train.ravel(),
+            'std': std_train_y.ravel()  
+        },
+        'test': {
+            'time': timestamps_test,
+            'actual': Y_test.ravel(),
+            'pred': Y_pred_test.ravel(),
+            'std': std_test_y.ravel()
+        },
+        # You can add the specific point of interest data here too if you want to recreate that specific curve
+        'metadata': {
+            'train_days': train_days,
+            'test_hours': test_hours,
+            'poi_sample_date': sample_date
+        }
+    }
+    save_path = BASE / "results" / "2019_WWTP_GPR_constraint.pkl"
+    with open(save_path, 'wb') as f:
+        pickle.dump(results_data, f)
+    print(f"Data successfully saved to: {save_path}")
+    
+    
 if __name__ == "__main__":
     main()
 
