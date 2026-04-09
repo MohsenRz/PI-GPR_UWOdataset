@@ -11,6 +11,10 @@ import matplotlib.pyplot as plt
 import matplotlib.dates as mdates
 from pathlib import Path
 
+## Font type 
+plt.rcParams['font.family'] = 'times new roman'
+
+
 folder = Path(__file__).parent
 # ─── CONFIG ───────────────────────────────────────────────────────────────────
 # Each tuple: (pickle_path, subplot_title, min_inflow, max_inflow)

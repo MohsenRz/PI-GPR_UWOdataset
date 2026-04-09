@@ -3,6 +3,7 @@ making a Gaussian Process Regression model for WWTP data prediction
 sensor data is used 
 mean function is created based on the SWMM data and added to the model
 coonstraints are added on this code and plotted based on TRUNCATED GAUSSIAN distribution
+normal distribution plot is saved 
 Author: Mohsen 
 updated at: 07/04/2026
 """
@@ -30,6 +31,9 @@ WWTP_inflow = pd.read_pickle(
 precipitation = pd.read_pickle(
     data_path / "precipitation" / "sensor_bn_r02_school_chatzenrainstr_2021_cleaned.pkl")
 mean_data = pd.read_csv( BASE / "faf_model" / "DWF_Mean_Function_WWTP_in_Seconds.csv")
+
+##plotting font 
+plt.rcParams['font.family'] = 'times new roman'  
 
 ## Preprocess Data
 WWTP_inflow['timestamp'] = pd.to_datetime(WWTP_inflow['timestamp'])
@@ -256,7 +260,7 @@ def build_gpr_model(X_train, Y_train, time_std_dev, mean_func=None):
                                             period=scaled_period)   # daily periodicity
     bounded_transform_daily = tfp.bijectors.Sigmoid(
         low=tf.constant(scaled_period/(24), dtype=tf.float64),  # at least one hour
-        high=tf.constant(scaled_period/2, dtype=tf.float64))    # at most 12 hours 
+        high=tf.constant(scaled_period/3, dtype=tf.float64))    # at most 12 hours 
     kernel_daily.base_kernel.lengthscales = gpflow.Parameter(0.01, transform=bounded_transform_daily)
     ### trend kernel 
     kernel_long_term = gpflow.kernels.RBF(variance=1.0, active_dims=[0])
@@ -507,6 +511,10 @@ def plot_point_of_interest(target_date_str, timestamps, X_scaled, model,
     
     plt.tight_layout()
     plt.show()
+    # savinf plot 
+    save_path = BASE / "results" / "2021_WWTP_GPR_constraint_truncated_distribution.png"
+    fig.savefig(save_path, dpi=300)
+    print(f"Normal distribution successfully saved to: {save_path}")
 
 def main():
     total_start = time.perf_counter()
@@ -612,7 +620,7 @@ def main():
     with open(save_path, 'wb') as f:
         pickle.dump(results_data, f)
     print(f"Data successfully saved to: {save_path}")
-   """ 
+    """
     
 if __name__ == "__main__":
     main()

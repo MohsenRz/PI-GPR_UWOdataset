@@ -1,10 +1,11 @@
 """ 
-making a Gaussian Process Regression model for WWTP data prediction
+making a Sparse Gaussian Process Regression model for WWTP data prediction
 sensor data is used 
 mean function is created based on the SWMM data and added to the model
 coonstraints are added on this code and plotted based on TRUNCATED GAUSSIAN distribution
+sparsed GP is plotted and saved for later use
 Author: Mohsen 
-updated at: 07/04/2026
+updated at: 08/04/2026
 """
 
 import pandas as pd 
@@ -16,6 +17,7 @@ from sklearn.preprocessing import StandardScaler
 import matplotlib.dates as mdates
 import time
 from scipy.stats import norm, truncnorm
+from scipy.cluster.vq import kmeans 
 from pathlib import Path
 import tensorflow_probability as tfp
 import pickle
@@ -26,17 +28,20 @@ BASE = Path(__file__).parent.parent
 data_path = BASE / "RAW_data" / "pickled_data"
 
 WWTP_inflow = pd.read_pickle(
-    data_path / "inflow_WWTP" / "sensor_bf_plsZUL1100_inflow_ara_2021-01-01_to_2021-12-31.pkl")
+    data_path / "inflow_WWTP" / "sensor_bf_plsZUL1100_inflow_ara_2019-01-01_to_2019-12-31.pkl")
 precipitation = pd.read_pickle(
-    data_path / "precipitation" / "sensor_bn_r02_school_chatzenrainstr_2021_cleaned.pkl")
+    data_path / "precipitation" / "sensor_bn_r02_school_chatzenrainstr_2019_cleaned.pkl")
 mean_data = pd.read_csv( BASE / "faf_model" / "DWF_Mean_Function_WWTP_in_Seconds.csv")
+
+##plotting font 
+plt.rcParams['font.family'] = 'times new roman'  
 
 ## Preprocess Data
 WWTP_inflow['timestamp'] = pd.to_datetime(WWTP_inflow['timestamp'])
 precipitation['timestamp'] = pd.to_datetime(precipitation['timestamp'])
 
 # train parameters
-train_start_time = pd.to_datetime("2021-04-10 00:00:00")
+train_start_time = pd.to_datetime("2019-09-30 00:00:00")
 train_days = 30  # Number of days for training
 train_end_time = train_start_time + pd.Timedelta(days=train_days)
 
@@ -48,6 +53,9 @@ timeinterval = 15 # minutes
 # constraints 
 min_inflow = 0.0  # Minimum WWTP inflow (L/s)
 max_inflow = 180.0  # Maximum WWTP inflow (L/s) based on the throttle setting
+
+# Inducing points 
+M = 100 
 
 WWTP_inflow_train = WWTP_inflow[(WWTP_inflow['timestamp'] >= train_start_time) & (WWTP_inflow['timestamp'] <= train_end_time)]
 precipitation_train = precipitation[(precipitation['timestamp'] >= train_start_time) & (precipitation['timestamp'] <= train_end_time)]
@@ -242,7 +250,7 @@ def mean_function(mean_data, scaler_Y, timestep, average_inflow):
 
 def build_gpr_model(X_train, Y_train, time_std_dev, mean_func=None):
     """
-    Build and train GPR model
+    Build and train SGPR model
     X_train: Scaled training data 
     Y_train: Scaled target data
     time_std_dev: the scaling factor (std) of the Time Column from scalara_X.scale_[0]
@@ -256,7 +264,7 @@ def build_gpr_model(X_train, Y_train, time_std_dev, mean_func=None):
                                             period=scaled_period)   # daily periodicity
     bounded_transform_daily = tfp.bijectors.Sigmoid(
         low=tf.constant(scaled_period/(24), dtype=tf.float64),  # at least one hour
-        high=tf.constant(scaled_period/2, dtype=tf.float64))    # at most 12 hours 
+        high=tf.constant(scaled_period/3, dtype=tf.float64))    # at most 8 hours 
     kernel_daily.base_kernel.lengthscales = gpflow.Parameter(0.01, transform=bounded_transform_daily)
     ### trend kernel 
     kernel_long_term = gpflow.kernels.RBF(variance=1.0, active_dims=[0])
@@ -289,11 +297,20 @@ def build_gpr_model(X_train, Y_train, time_std_dev, mean_func=None):
     
     kernel = kernel_long_term * kernel_daily + kernel_rain  # kernel noise is removed because the likelihhod variance takes the overal noise
     
+    # sparsification with inducing points
+    num_inducing = min(M, X_train.shape[0]//2)  # choose number of inducing points
+    Z_init, _ = kmeans(X_train, num_inducing)
+    Z = tf.convert_to_tensor(Z_init, dtype=tf.float64)
+    
     X_train_tf = tf.convert_to_tensor(X_train, dtype=tf.float64)
     Y_train_tf = tf.convert_to_tensor(Y_train, dtype=tf.float64)
     
-    model = gpflow.models.GPR(data=(X_train_tf, Y_train_tf), 
-                              kernel=kernel, mean_function=mean_func)
+    model = gpflow.models.SGPR(data=(X_train_tf, Y_train_tf), 
+                               kernel=kernel, mean_function=mean_func, 
+                               inducing_variable=Z)
+    # freezing inducing points 
+    gpflow.set_trainable(model.inducing_variable, True)
+    
     #optimise hyperparameters
     opt = gpflow.optimizers.Scipy()
     opt.minimize(model.training_loss, 
@@ -368,9 +385,10 @@ def model_evaluation(Y_true, Y_pred, std_pred):
 
 def plot_results(timestamps_train, Y_train, Y_pred_train, std_train,
                  timestamps_test, Y_test, Y_pred_test, std_test,
+                 Z_timestamps=None, Z_inflow=None,
                  min_inflow=None, max_inflow=None, sample_date=None):
     """
-    Plot training and test results
+    Plot training and test results with inducing points 
     shows the bounds of 95% confidence interval and the actual data points for both train and test sets.
     If sample_date is provided, it will also plot the PDF for that specific timestamp.
     CIs are clipped if constraints exist 
@@ -386,6 +404,11 @@ def plot_results(timestamps_train, Y_train, Y_pred_train, std_train,
                     Y_pred_train.ravel() - 1.96 * std_train.ravel(),
                     Y_pred_train.ravel() + 1.96 * std_train.ravel(),
                     alpha=0.2, color='green', label='95% CI (Training)', zorder=2)
+    #Plotting Inducing Points 
+    if Z_timestamps is not None:
+        y_min = Y_train.min()
+        ax.plot(Z_timestamps, [y_min]*len(Z_timestamps), '|', c='k', markersize=15, 
+                label='Inducing Points', zorder=5)
     
     # Plot test data
     ax.scatter(timestamps_test, Y_test.ravel(), c='orange', s=15,
@@ -414,7 +437,7 @@ def plot_results(timestamps_train, Y_train, Y_pred_train, std_train,
     # Formatting
     ax.set_xlabel('Date', fontsize=12)
     ax.set_ylabel('WWTP Inflow', fontsize=12)
-    ax.set_title(f'GPR: WWTP Inflow Prediction (Train: {train_days} days, Test: {test_hours} hours)', 
+    ax.set_title(f'SGPR: WWTP Inflow Prediction (Train: {train_days} days, Test: {test_hours} hours)', 
                  fontsize=14)
     ax.legend(fontsize=11, loc='best')
     ax.grid(True, alpha=0.3)
@@ -507,11 +530,15 @@ def plot_point_of_interest(target_date_str, timestamps, X_scaled, model,
     
     plt.tight_layout()
     plt.show()
+    # savinf plot 
+    #save_path = BASE / "results" / "2021_WWTP_GPR_constraint_truncated_distribution.png"
+    #fig.savefig(save_path, dpi=300)
+    #print(f"Normal distribution successfully saved to: {save_path}")
 
 def main():
     total_start = time.perf_counter()
     print("="*70)
-    print("GPR Model for WWTP Inflow Prediction")
+    print("SGPR Model for WWTP Inflow Prediction")
     print("="*70)
     
     merged_all = pd.concat([merged_train, merged_test]).sort_index()
@@ -542,7 +569,7 @@ def main():
     
     mean_func = create_lookup_function(daily_pattern, time_mean, time_scale)
     
-    print("\nTraining GPR model...")
+    print("\nTraining SGPR model...")
     # Pass Time Std Dev for Period Calculation
     model = build_gpr_model(X_train_scaled, Y_train_scaled, scaler_X.scale_[0], mean_func=mean_func)
     
@@ -559,6 +586,25 @@ def main():
     
     Y_pred_test, std_test_y, std_test_f = prediction(model, X_test_scaled, scaler_Y, 
                                                      min_val=min_inflow, max_val=max_inflow)
+    
+    # --- EXTRACT INDUCING POINTS FOR PLOTTING ---
+    print("\nExtracting Inducing Points...")
+    
+    # 1. Get Z in Scaled Space (Shape: M x 2)
+    Z_scaled = model.inducing_variable.Z.numpy()
+    
+    # 2. Unscale X-coordinates (Time and Rain)
+    Z_unscaled = scaler_X.inverse_transform(Z_scaled)
+    Z_time_minutes = Z_unscaled[:, 0]
+    
+    # 3. Convert Time-Minutes back to Timestamps
+    # We add the minutes to the train_start_time
+    Z_timestamps = [train_start_time + pd.Timedelta(minutes=float(m)) for m in Z_time_minutes]
+    
+    # 4. Calculate Y-coordinates (Inflow) for these points
+    # We ask the model: "What is the expected inflow at these Z locations?"
+    mu_Z_scaled, _ = model.predict_f(Z_scaled)
+    Z_inflow = scaler_Y.inverse_transform(mu_Z_scaled.numpy())
     
     # --- COMPARISON TABLE ---
     train_metrics = model_evaluation(Y_train, Y_pred_train, std_train_y)
@@ -582,11 +628,12 @@ def main():
     sample_date = str(train_end_time + pd.Timedelta(hours=12))  # it shows the 12th hour of the predictions
     plot_results(timestamps_train, Y_train, Y_pred_train, std_train_y,
                  timestamps_test, Y_test, Y_pred_test, std_test_y,
+                 Z_timestamps=Z_timestamps, Z_inflow=Z_inflow,
                  min_inflow=min_inflow, max_inflow=max_inflow, sample_date=sample_date)
     plot_point_of_interest(sample_date, timestamps_test,
                            X_test_scaled, model, scaler_Y,
                            Y_test, min_val=min_inflow, max_val=max_inflow)
-    """
+    
     # saving figures for a later use 
     results_data = {
         'train': {
@@ -601,18 +648,21 @@ def main():
             'pred': Y_pred_test.ravel(),
             'std': std_test_y.ravel()
         },
-        # You can add the specific point of interest data here too if you want to recreate that specific curve
+        'inducing_points': {
+            'timestamps': Z_timestamps,
+            'inflow': Z_inflow
+        },
         'metadata': {
             'train_days': train_days,
             'test_hours': test_hours,
             'poi_sample_date': sample_date
         }
     }
-    save_path = BASE / "results" / "2019_WWTP_GPR_constraint.pkl"
+    save_path = BASE / "results" / "2019_WWTP_SGPR_constraint_M100.pkl"
     with open(save_path, 'wb') as f:
         pickle.dump(results_data, f)
     print(f"Data successfully saved to: {save_path}")
-   """ 
+    
     
 if __name__ == "__main__":
     main()
