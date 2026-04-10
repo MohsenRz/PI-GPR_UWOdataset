@@ -1,12 +1,13 @@
 """
-making a Gaussian Process Regression model for CSO prediction
+making a Gaussian Process Regression model for CSO prediction + kernel design + mean function + constraints
 sensor data is used 
-this is a naive model that only takes CSO data for predictions 
+Stratified sparsification is used to use inducing points in a more smart manner 
+inducing points are spread in defined regions 
 automatic lag time detection is used to find the optimal lag time for precipitation data in short term
 a new attribute is added: long-term accumulated precipitation, to see the effect in filling the upstream tank
-mean function and min/max values have been added to the model 
 Author: Mohsen 
-Date: 06/03/2026
+Date: 03/03/2026
+updated: 10/04/2026 for getting results for the paper 
 """
 
 import numpy as np
@@ -18,8 +19,10 @@ from sklearn.preprocessing import StandardScaler
 import matplotlib.dates as mdates
 import time
 from scipy.stats import truncnorm
+from scipy.cluster.vq import kmeans
 from pathlib import Path
 import tensorflow_probability as tfp
+import pickle
 
 # load data
 BASE = Path(__file__).parent.parent
@@ -27,27 +30,30 @@ BASE = Path(__file__).parent.parent
 data_path = BASE / "RAW_data" / "pickled_data"
 
 CSO = pd.read_pickle(
-    data_path / "overflow_to_CSO" / "sensor_bf_plsRKBA1101_rubbasin_ara_2019-01-01_to_2019-12-31.pkl")
+    data_path / "overflow_to_CSO" / "sensor_bf_plsRKBA1101_rubbasin_ara_2021-01-01_to_2021-12-31.pkl")
 precipitation = pd.read_pickle(
-    data_path / "precipitation" / "sensor_bn_r02_school_chatzenrainstr_2019_cleaned.pkl")
+    data_path / "precipitation" / "sensor_bn_r02_school_chatzenrainstr_2021_cleaned.pkl")
 
 # preprocess data
 CSO['timestamp'] = pd.to_datetime(CSO['timestamp'])
 precipitation['timestamp'] = pd.to_datetime(precipitation['timestamp'])
 
 # train parameters 
-train_start_time = pd.to_datetime("2019-06-01 00:00:00")
+train_start_time = pd.to_datetime("2021-04-10 00:00:00") #- pd.Timedelta(days=150)
 train_days = 30  # Number of days for training
 train_end_time = train_start_time + pd.Timedelta(days=train_days)
 
 # test parameters
 test_hours = 5 * 24  # Hours to predict
 test_end_time = train_end_time + pd.Timedelta(hours=test_hours)
-timeinterval = 15 # minutes 
+timeinterval = 5 # minutes 
+
+# inducing points 
+M = 250    
 
 # constraints 
 mean_value = 0 # L/s
-min_flow = 0 # L/s
+min_flow = None # L/s
 max_flow = None # No upper limit 
 
 CSO_train = CSO[(CSO['timestamp'] >= train_start_time) & (CSO['timestamp'] <= train_end_time)]
@@ -133,10 +139,9 @@ def find_optimal_short_term_rain_lag(merged_data, interval_minutes, max_lag_hour
     plt.grid(True, alpha=0.3)
     plt.legend()
     plt.tight_layout()
-    plt.show()
+    #plt.show()
     """
     print(f"\nOptimal precipitation lag: {optimal_lag} minutes")
-    print(f"Max correlation: {correlations[optimal_lag]:.3f}")
     
     return optimal_lag, correlations
 
@@ -169,19 +174,69 @@ def preparing_data(merged_data, start_time, interval_minutes=timeinterval,
         
     return X_multi, Y, timestamps
 
-def build_gpr_model(X_train, Y_train, time_std_dev, scaler_Y=None):
+def initialize_smart_inducing_points(X_train, Y_train, total_M, scaled_threshold):
+    print("\nInitializing Stratified Inducing Points...")
+    
+    # Identify indices above and below the threshold
+    is_above = (Y_train > scaled_threshold).flatten()
+    is_below = ~is_above
+    
+    X_above = X_train[is_above]
+    X_below = X_train[is_below]
+    
+    # Allocate 50% to active periods, 50% to flat periods
+    M_above = int(total_M * 0.5)
+    M_below = total_M - M_above
+    
+    print(f"  - Points > average level: {len(X_above)}. Allocating {M_above} inducing points.")
+    print(f"  - Points <= average level: {len(X_below)}. Allocating {M_below} inducing points.")
+    
+    # K-means for ABOVE average
+    if len(X_above) > M_above:
+        Z_above, _ = kmeans(X_above, M_above)
+    elif len(X_above) > 0:
+        Z_above = X_above
+    else:
+        Z_above = np.empty((0, X_train.shape[1]))
+        
+    # K-means for BELOW average
+    if len(X_below) > M_below:
+        Z_below, _ = kmeans(X_below, M_below)
+    elif len(X_below) > 0:
+        Z_below = X_below
+    else:
+        Z_below = np.empty((0, X_train.shape[1]))
+        
+    Z_combined = np.vstack([Z_above, Z_below])
+    
+    # Safety net: ensure we have exactly total_M points (in case of shortages)
+    if len(Z_combined) < total_M:
+        shortage = total_M - len(Z_combined)
+        idx = np.random.choice(len(X_train), shortage, replace=False)
+        Z_combined = np.vstack([Z_combined, X_train[idx]])
+    elif len(Z_combined) > total_M:
+        Z_combined = Z_combined[:total_M, :]
+        
+    return Z_combined
+
+def build_gpr_model(X_train, Y_train, time_std_dev, scaler_Y=None, threshold_scaled=None):
     """
-    Build and train GPR model with constraints 
+    Build and train SGPR model
     X_train: Scaled training data 
     Y_train: Scaled target data
     time_std_dev: the scaling factor (std) of the Time Column from scalara_X.scale_[0]
+    Added threshold_scaled argument for smart initialisation of inducing points
     """ 
     minutes_in_day = 24 * 60
     scaled_period = minutes_in_day / time_std_dev  # Adjust period based on scaling
     print(f"Scaled period for daily cycle: {scaled_period}")
     
     ### kernel design 
-    time_kernel = gpflow.kernels.RBF(lengthscales=scaled_period) 
+    time_kernel = gpflow.kernels.RBF(variance=1.0, active_dims=[0])
+    bounded_transform_time = tfp.bijectors.Sigmoid(
+        low=tf.constant(2.0 * scaled_period, dtype=tf.float64), 
+        high=tf.constant(14.0 * scaled_period, dtype=tf.float64))
+    time_kernel.lengthscales = gpflow.Parameter(7.0 * scaled_period, transform=bounded_transform_time)
     
     ### rain kernel 
     kernel_rain_short = gpflow.kernels.Matern12(variance=1, active_dims=[1])
@@ -192,11 +247,16 @@ def build_gpr_model(X_train, Y_train, time_std_dev, scaler_Y=None):
     
     kernel_rain_long = gpflow.kernels.Matern52(variance=1, active_dims=[2])
     bounded_transform_rain_long = tfp.bijectors.Sigmoid(
-        low=tf.constant(1, dtype=tf.float64), 
+        low=tf.constant(0.5, dtype=tf.float64), 
         high=tf.constant(5, dtype=tf.float64)) 
-    kernel_rain_long.lengthscales = gpflow.Parameter(3, transform=bounded_transform_rain_long)
+    kernel_rain_long.lengthscales = gpflow.Parameter(2, transform=bounded_transform_rain_long)
     
-    kernel = kernel_rain_short +kernel_rain_long + time_kernel
+    kernel = time_kernel + kernel_rain_short + kernel_rain_long 
+    
+    # --- STRATIFIED SPARSIFICATION ---
+    num_inducing = min(M, X_train.shape[0]//2)
+    Z_init = initialize_smart_inducing_points(X_train, Y_train, num_inducing, threshold_scaled)
+    Z = tf.convert_to_tensor(Z_init, dtype=tf.float64)
     
     X_train_tf = tf.convert_to_tensor(X_train, dtype=tf.float64)
     Y_train_tf = tf.convert_to_tensor(Y_train, dtype=tf.float64)
@@ -204,13 +264,23 @@ def build_gpr_model(X_train, Y_train, time_std_dev, scaler_Y=None):
     # Scale mean_value to match Y_train scaling
     if scaler_Y is not None:
         mean_scaled = scaler_Y.transform([[mean_value]])[0, 0]
-        print(f"Mean flow: {mean_value} L/s (scaled: {mean_scaled:.4f})")
+        print(f"Mean function: {mean_value} L/s (scaled: {mean_scaled:.4f})")
     else:
         mean_scaled = mean_value
     
-    model = gpflow.models.GPR(data=(X_train_tf, Y_train_tf), 
+    model = gpflow.models.SGPR(data=(X_train_tf, Y_train_tf), 
+                              inducing_variable=Z,
                               kernel=kernel, 
-                              mean_function=gpflow.mean_functions.Constant(mean_scaled))
+                              mean_function=gpflow.mean_functions.Constant(mean_scaled)
+                              )
+    
+    #We force the model to maintain a minimum baseline noise so the bounds don't disappear
+    bounded_transform_noise = tfp.bijectors.Sigmoid(
+        low=tf.constant(0.05, dtype=tf.float64),  # Lower bound for noise variance
+        high=tf.constant(2.0, dtype=tf.float64))
+    model.likelihood.variance = gpflow.Parameter(0.1, transform=bounded_transform_noise)
+    # freezing inducing points 
+    gpflow.set_trainable(model.inducing_variable, True)
     
     # optimisation 
     opt = gpflow.optimizers.Scipy()
@@ -293,10 +363,13 @@ def model_evaluation(Y_true, Y_pred, std_pred):
     
 def plot_results(timestamps_train, Y_train, Y_pred_train, std_train,
                  timestamps_test, Y_test, Y_pred_test, std_test, 
-                 min_level=None, max_level=None, sample_date=None):
+                 min_level=None, max_level=None, sample_date=None,
+                 Z_timestamps=None, Z_values=None):
+    
     """
     Plot training and test results with uncertainty.
     Credible Intervals are clipped 
+    inducing points are shown on the plot 
     """
     fig, ax = plt.subplots(figsize=(12, 6))
     
@@ -309,6 +382,10 @@ def plot_results(timestamps_train, Y_train, Y_pred_train, std_train,
                     Y_pred_train.ravel() - 1.96 * std_train.ravel(),
                     Y_pred_train.ravel() + 1.96 * std_train.ravel(),
                     alpha=0.2, color='green', label='95% CI (Training)')
+    # plotting inducing points 
+    if Z_timestamps is not None and Z_values is not None:
+        ax.scatter(Z_timestamps, Z_values.ravel(), c='purple', s=50, 
+                   label='Inducing Points', marker='|', zorder=5)
     
     # Plot test data
     ax.scatter(timestamps_test, Y_test.ravel(), c='orange', s=15,
@@ -337,8 +414,8 @@ def plot_results(timestamps_train, Y_train, Y_pred_train, std_train,
     
     # Formatting
     ax.set_xlabel('Date', fontsize=12)
-    ax.set_ylabel('Tank Level (mm)', fontsize=12)
-    ax.set_title(f'GPR: Tank Level Prediction (Train: {train_days} days, Test: {test_hours} hours)', 
+    ax.set_ylabel('CSO (L/s)', fontsize=12)
+    ax.set_title(f'SGPR: CSO Prediction (Train: {train_days} days, Test: {test_hours} hours)', 
                  fontsize=14)
     ax.legend(fontsize=11, loc='best')
     ax.grid(True, alpha=0.3)
@@ -437,7 +514,7 @@ def plot_point_of_interest(target_date_str, timestamps, X_scaled, model,
     
     plt.tight_layout()
     plt.show()
-
+    
 def main():
     total_start = time.perf_counter()
     print("="*70 + "\nNaive CSO GPR Prediction\n" + "="*70)
@@ -456,9 +533,12 @@ def main():
     X_train_scaled = scaler_X.fit_transform(X_train)
     Y_train_scaled = scaler_Y.fit_transform(Y_train)
     
-    print("\nTraining GPR model...")
+    # The average_CSO is physical data. We must scale it to match Y_train_scaled.
+    threshold_scaled = scaler_Y.transform([[average_CSO]])[0, 0]
+    
+    print("\nTraining SGPR model...")
     # Pass Time Std Dev for Period Calculation
-    model = build_gpr_model(X_train_scaled, Y_train_scaled, scaler_X.scale_[0], scaler_Y)
+    model = build_gpr_model(X_train_scaled, Y_train_scaled, scaler_X.scale_[0], scaler_Y, threshold_scaled)
     
     # --- PREDICTION ON TRAIN ---
     Y_pred_train, std_train_y, std_train_f = prediction(model, X_train_scaled, scaler_Y,
@@ -475,6 +555,14 @@ def main():
     Y_pred_test, std_test_y, std_test_f = prediction(model, X_test_scaled, scaler_Y,
                                                       min_val=min_flow,
                                                       max_val=max_flow)
+    
+    # Extracting inducing points for plotting
+    Z_scaled = model.inducing_variable.Z.numpy()
+    Z_unscaled = scaler_X.inverse_transform(Z_scaled)
+    Z_time_minutes = Z_unscaled[:, 0]
+    Z_timestamps = [train_start_time + pd.Timedelta(minutes=float(tm)) for tm in Z_time_minutes]
+    mu_Z_scaled, _ = model.predict_f(Z_scaled)
+    Z_values = scaler_Y.inverse_transform(mu_Z_scaled.numpy())
     
     # --- COMPARISON TABLE ---
     train_metrics = model_evaluation(Y_train, Y_pred_train, std_train_y)
@@ -495,14 +583,38 @@ def main():
     print(f"\nTotal execution time: {total_time:.1f} seconds")
     print("Prediction complete!")
     #--- PLOTTING ---
-    sample_date = str(train_end_time + pd.Timedelta(hours=24))  # it shows the 24th hour of the predictions
+    sample_date = None  # 
     plot_results(timestamps_train, Y_train, Y_pred_train, std_train_y,
                  timestamps_test, Y_test, Y_pred_test, std_test_y,
                  min_level=min_flow, max_level=max_flow,
-                 sample_date=sample_date)
-    plot_point_of_interest(sample_date, timestamps_test,
-                           X_test_scaled, model, scaler_Y, Y_actual=Y_test,
-                           min_val=min_flow, max_val=max_flow)
+                 sample_date=sample_date,
+                 Z_timestamps=Z_timestamps, Z_values=Z_values)
 
+
+    # saving figures for a later use 
+    results_data = {
+        'train': {
+            'time': timestamps_train,
+            'actual': Y_train.ravel(),
+            'pred': Y_pred_train.ravel(),
+            'std': std_train_y.ravel()  
+        },
+        'test': {
+            'time': timestamps_test,
+            'actual': Y_test.ravel(),
+            'pred': Y_pred_test.ravel(),
+            'std': std_test_y.ravel()
+        },
+        'metadata': {
+            'train_days': train_days,
+            'test_hours': test_hours
+        }
+    }
+    save_path = BASE / "results" / "CSO_outputs" / "2021_CSO_SGPR_stratified_M250_5min_mean.pkl"
+    with open(save_path, 'wb') as f:
+        pickle.dump(results_data, f)
+    print(f"Data successfully saved to: {save_path}")
+    
 if __name__ == "__main__":
     main()
+

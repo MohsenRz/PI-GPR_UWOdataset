@@ -6,6 +6,7 @@ automatic lag time detection is used to find the optimal lag time for precipitat
 a new attribute is added: long-term accumulated precipitation, to see the effect in filling the upstream tank
 Author: Mohsen 
 Date: 03/03/2026
+updated: 09/04/2026 for getting results for the paper 
 """
 
 import numpy as np
@@ -19,6 +20,7 @@ import time
 from scipy.stats import norm
 from pathlib import Path
 import tensorflow_probability as tfp
+import pickle
 
 # load data
 BASE = Path(__file__).parent.parent
@@ -26,16 +28,16 @@ BASE = Path(__file__).parent.parent
 data_path = BASE / "RAW_data" / "pickled_data"
 
 CSO = pd.read_pickle(
-    data_path / "overflow_to_CSO" / "sensor_bf_plsRKBA1101_rubbasin_ara_2019-01-01_to_2019-12-31.pkl")
+    data_path / "overflow_to_CSO" / "sensor_bf_plsRKBA1101_rubbasin_ara_2021-01-01_to_2021-12-31.pkl")
 precipitation = pd.read_pickle(
-    data_path / "precipitation" / "sensor_bn_r02_school_chatzenrainstr_2019_cleaned.pkl")
+    data_path / "precipitation" / "sensor_bn_r02_school_chatzenrainstr_2021_cleaned.pkl")
 
 # preprocess data
 CSO['timestamp'] = pd.to_datetime(CSO['timestamp'])
 precipitation['timestamp'] = pd.to_datetime(precipitation['timestamp'])
 
 # train parameters 
-train_start_time = pd.to_datetime("2019-08-01 00:00:00")
+train_start_time = pd.to_datetime("2021-04-10 00:00:00")
 train_days = 30  # Number of days for training
 train_end_time = train_start_time + pd.Timedelta(days=train_days)
 
@@ -113,7 +115,7 @@ def find_optimal_short_term_rain_lag(merged_data, interval_minutes, max_lag_hour
     # Find optimal lag
     optimal_lag = max(correlations, key=correlations.get)
     
-   
+    """
     # Plot results
     plt.figure(figsize=(10, 5))
     lags = list(correlations.keys())
@@ -127,10 +129,9 @@ def find_optimal_short_term_rain_lag(merged_data, interval_minutes, max_lag_hour
     plt.grid(True, alpha=0.3)
     plt.legend()
     plt.tight_layout()
-    plt.show()
- 
+    #plt.show()
+    """
     print(f"\nOptimal precipitation lag: {optimal_lag} minutes")
-    print(f"Max correlation: {correlations[optimal_lag]:.3f}")
     
     return optimal_lag, correlations
 
@@ -175,7 +176,11 @@ def build_gpr_model(X_train, Y_train, time_std_dev):
     print(f"Scaled period for daily cycle: {scaled_period}")
     
     ### kernel design 
-    time_kernel = gpflow.kernels.RBF(lengthscales=scaled_period) 
+    time_kernel = gpflow.kernels.RBF(variance=1.0, active_dims=[0])
+    bounded_transform_time = tfp.bijectors.Sigmoid(
+        low=tf.constant(2.0 * scaled_period, dtype=tf.float64), 
+        high=tf.constant(14.0 * scaled_period, dtype=tf.float64))
+    time_kernel.lengthscales = gpflow.Parameter(7.0 * scaled_period, transform=bounded_transform_time)
     
     ### rain kernel 
     kernel_rain_short = gpflow.kernels.Matern12(variance=1, active_dims=[1])
@@ -186,17 +191,23 @@ def build_gpr_model(X_train, Y_train, time_std_dev):
     
     kernel_rain_long = gpflow.kernels.Matern52(variance=1, active_dims=[2])
     bounded_transform_rain_long = tfp.bijectors.Sigmoid(
-        low=tf.constant(1, dtype=tf.float64), 
+        low=tf.constant(0.5, dtype=tf.float64), 
         high=tf.constant(5, dtype=tf.float64)) 
-    kernel_rain_long.lengthscales = gpflow.Parameter(3, transform=bounded_transform_rain_long)
+    kernel_rain_long.lengthscales = gpflow.Parameter(2, transform=bounded_transform_rain_long)
     
-    kernel = kernel_rain_short +kernel_rain_long + time_kernel
+    kernel = time_kernel + kernel_rain_short + kernel_rain_long 
     
     X_train_tf = tf.convert_to_tensor(X_train, dtype=tf.float64)
     Y_train_tf = tf.convert_to_tensor(Y_train, dtype=tf.float64)
     
     model = gpflow.models.GPR(data=(X_train_tf, Y_train_tf), 
                               kernel=kernel, mean_function=None)
+    
+    # We force the model to maintain a minimum baseline noise so the bounds don't disappear
+    #bounded_transform_noise = tfp.bijectors.Sigmoid(
+    #    low=tf.constant(0.05, dtype=tf.float64),  # Lower bound for noise variance
+    #    high=tf.constant(1.0, dtype=tf.float64))
+    #model.likelihood.variance = gpflow.Parameter(0.1, transform=bounded_transform_noise)
     
     # optimisation 
     opt = gpflow.optimizers.Scipy()
@@ -270,8 +281,8 @@ def plot_results(timestamps_train, Y_train, Y_pred_train, std_train,
     
     # Formatting
     ax.set_xlabel('Date', fontsize=12)
-    ax.set_ylabel('WWTP Inflow', fontsize=12)
-    ax.set_title(f'GPR: WWTP Inflow Prediction (Train: {train_days} days, Test: {test_hours} hours)', 
+    ax.set_ylabel('CSO flow (L/s)', fontsize=12)
+    ax.set_title(f'GPR: CSO Prediction (Train: {train_days} days, Test: {test_hours} hours)', 
                  fontsize=14)
     ax.legend(fontsize=11, loc='best')
     ax.grid(True, alpha=0.3)
@@ -352,6 +363,31 @@ def main():
     plot_results(timestamps_train, Y_train, Y_pred_train, std_train_y,
                  timestamps_test, Y_test, Y_pred_test, std_test_y)
 
+
+    # saving figures for a later use 
+    results_data = {
+        'train': {
+            'time': timestamps_train,
+            'actual': Y_train.ravel(),
+            'pred': Y_pred_train.ravel(),
+            'std': std_train_y.ravel()  
+        },
+        'test': {
+            'time': timestamps_test,
+            'actual': Y_test.ravel(),
+            'pred': Y_pred_test.ravel(),
+            'std': std_test_y.ravel()
+        },
+        'metadata': {
+            'train_days': train_days,
+            'test_hours': test_hours
+        }
+    }
+    save_path = BASE / "results" / "CSO_outputs" / "2021_CSO_GPR_kernel.pkl"
+    with open(save_path, 'wb') as f:
+        pickle.dump(results_data, f)
+    print(f"Data successfully saved to: {save_path}")
+    
 if __name__ == "__main__":
     main()
 

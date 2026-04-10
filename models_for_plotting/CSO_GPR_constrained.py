@@ -1,12 +1,12 @@
 """
-making a Gaussian Process Regression model for CSO prediction
+making a Gaussian Process Regression model for CSO prediction + kernel design + mean function + constraints
 sensor data is used 
 this is a naive model that only takes CSO data for predictions 
 automatic lag time detection is used to find the optimal lag time for precipitation data in short term
 a new attribute is added: long-term accumulated precipitation, to see the effect in filling the upstream tank
-mean function and min/max values have been added to the model 
 Author: Mohsen 
-Date: 06/03/2026
+Date: 03/03/2026
+updated: 09/04/2026 for getting results for the paper 
 """
 
 import numpy as np
@@ -17,9 +17,10 @@ import gpflow
 from sklearn.preprocessing import StandardScaler
 import matplotlib.dates as mdates
 import time
-from scipy.stats import truncnorm
+from scipy.stats import norm, truncnorm
 from pathlib import Path
 import tensorflow_probability as tfp
+import pickle
 
 # load data
 BASE = Path(__file__).parent.parent
@@ -36,7 +37,7 @@ CSO['timestamp'] = pd.to_datetime(CSO['timestamp'])
 precipitation['timestamp'] = pd.to_datetime(precipitation['timestamp'])
 
 # train parameters 
-train_start_time = pd.to_datetime("2019-06-01 00:00:00")
+train_start_time = pd.to_datetime("2019-09-30 00:00:00")
 train_days = 30  # Number of days for training
 train_end_time = train_start_time + pd.Timedelta(days=train_days)
 
@@ -69,9 +70,9 @@ precipitation_test_resampled = precipitation_test.resample(interval_string).mean
 
 # Merge data 
 merged_train = CSO_train_resampled.join(precipitation_train_resampled, 
-                                         lsuffix='_inflow', rsuffix='_precipitation', how='inner')
+                                         lsuffix='_flow', rsuffix='_precipitation', how='inner')
 merged_test = CSO_test_resampled.join(precipitation_test_resampled, 
-                                       lsuffix='_inflow', rsuffix='_precipitation', how='inner')
+                                       lsuffix='_flow', rsuffix='_precipitation', how='inner')
 merged_train.dropna(inplace=True)
 merged_test.dropna(inplace=True)
 average_CSO = CSO['value'].mean()
@@ -92,10 +93,10 @@ def find_optimal_short_term_rain_lag(merged_data, interval_minutes, max_lag_hour
         optimal_lag_minutes: Best lag time in minutes
         correlations: Dictionary of {lag_minutes: correlation_value}
     """
-    inflow_col = [col for col in merged_data.columns if 'inflow' in col.lower()][0]
+    flow_col = [col for col in merged_data.columns if 'flow' in col.lower()][0]
     precip_col = [col for col in merged_data.columns if 'precipitation' in col.lower()][0]
     
-    inflow = merged_data[inflow_col].values
+    flow = merged_data[flow_col].values
     precip = merged_data[precip_col].values
     
     # Test different lag windows
@@ -111,9 +112,9 @@ def find_optimal_short_term_rain_lag(merged_data, interval_minutes, max_lag_hour
         rain_accum = pd.Series(precip).rolling(window=window_size).sum().fillna(0).values
         
         # Calculate correlation (excluding NaNs)
-        valid_idx = ~(np.isnan(inflow) | np.isnan(rain_accum))
+        valid_idx = ~(np.isnan(flow) | np.isnan(rain_accum))
         if valid_idx.sum() > 0:
-            corr = np.corrcoef(inflow[valid_idx], rain_accum[valid_idx])[0, 1]
+            corr = np.corrcoef(flow[valid_idx], rain_accum[valid_idx])[0, 1]
             correlations[lag_minutes] = corr
     
     # Find optimal lag
@@ -128,15 +129,14 @@ def find_optimal_short_term_rain_lag(merged_data, interval_minutes, max_lag_hour
     plt.axvline(x=optimal_lag, color='r', linestyle='--', 
                 label=f'Optimal lag: {optimal_lag} min')
     plt.xlabel('Precipitation Accumulation Window (minutes)', fontsize=12)
-    plt.ylabel('Cross-correlation with CSO Inflow', fontsize=12)
+    plt.ylabel('Cross-correlation with CSO Flow', fontsize=12)
     plt.title('Cross-Correlation Analysis: Rain Lag vs CSO Response', fontsize=14)
     plt.grid(True, alpha=0.3)
     plt.legend()
     plt.tight_layout()
-    plt.show()
+    #plt.show()
     """
     print(f"\nOptimal precipitation lag: {optimal_lag} minutes")
-    print(f"Max correlation: {correlations[optimal_lag]:.3f}")
     
     return optimal_lag, correlations
 
@@ -144,7 +144,7 @@ def preparing_data(merged_data, start_time, interval_minutes=timeinterval,
                    short_lag_minutes=120, long_lag_hours=24): 
     #creating multi dimensional input as timestamps and precipitation data
     timestamps = merged_data.index
-    inflow_col = [col for col in merged_data.columns if 'inflow' in col.lower()][0]
+    flow_col = [col for col in merged_data.columns if 'flow' in col.lower()][0]
     precip_col = [col for col in merged_data.columns if 'precipitation' in col.lower()][0]
     
     time_feat = np.array([(ts - start_time).total_seconds() / 60.0 for ts in timestamps]).reshape(-1, 1)  # time in minutes
@@ -162,16 +162,16 @@ def preparing_data(merged_data, start_time, interval_minutes=timeinterval,
     if window_size_long < 1: window_size_long = 1
     rain_long = rain_series.rolling(window=window_size_long).sum().fillna(0).values.reshape(-1, 1)
     
-    inflow = merged_data[inflow_col].values.reshape(-1, 1)
+    flow = merged_data[flow_col].values.reshape(-1, 1)
     
     X_multi = np.hstack((time_feat, rain_short, rain_long))
-    Y = inflow
+    Y = flow
         
     return X_multi, Y, timestamps
 
 def build_gpr_model(X_train, Y_train, time_std_dev, scaler_Y=None):
     """
-    Build and train GPR model with constraints 
+    Build and train GPR model
     X_train: Scaled training data 
     Y_train: Scaled target data
     time_std_dev: the scaling factor (std) of the Time Column from scalara_X.scale_[0]
@@ -181,7 +181,11 @@ def build_gpr_model(X_train, Y_train, time_std_dev, scaler_Y=None):
     print(f"Scaled period for daily cycle: {scaled_period}")
     
     ### kernel design 
-    time_kernel = gpflow.kernels.RBF(lengthscales=scaled_period) 
+    time_kernel = gpflow.kernels.RBF(variance=1.0, active_dims=[0])
+    bounded_transform_time = tfp.bijectors.Sigmoid(
+        low=tf.constant(2.0 * scaled_period, dtype=tf.float64), 
+        high=tf.constant(14.0 * scaled_period, dtype=tf.float64))
+    time_kernel.lengthscales = gpflow.Parameter(7.0 * scaled_period, transform=bounded_transform_time)
     
     ### rain kernel 
     kernel_rain_short = gpflow.kernels.Matern12(variance=1, active_dims=[1])
@@ -192,11 +196,11 @@ def build_gpr_model(X_train, Y_train, time_std_dev, scaler_Y=None):
     
     kernel_rain_long = gpflow.kernels.Matern52(variance=1, active_dims=[2])
     bounded_transform_rain_long = tfp.bijectors.Sigmoid(
-        low=tf.constant(1, dtype=tf.float64), 
+        low=tf.constant(0.5, dtype=tf.float64), 
         high=tf.constant(5, dtype=tf.float64)) 
-    kernel_rain_long.lengthscales = gpflow.Parameter(3, transform=bounded_transform_rain_long)
+    kernel_rain_long.lengthscales = gpflow.Parameter(2, transform=bounded_transform_rain_long)
     
-    kernel = kernel_rain_short +kernel_rain_long + time_kernel
+    kernel = time_kernel + kernel_rain_short + kernel_rain_long 
     
     X_train_tf = tf.convert_to_tensor(X_train, dtype=tf.float64)
     Y_train_tf = tf.convert_to_tensor(Y_train, dtype=tf.float64)
@@ -204,13 +208,18 @@ def build_gpr_model(X_train, Y_train, time_std_dev, scaler_Y=None):
     # Scale mean_value to match Y_train scaling
     if scaler_Y is not None:
         mean_scaled = scaler_Y.transform([[mean_value]])[0, 0]
-        print(f"Mean flow: {mean_value} L/s (scaled: {mean_scaled:.4f})")
+        print(f"Mean function: {mean_value} L/s (scaled: {mean_scaled:.4f})")
     else:
         mean_scaled = mean_value
     
     model = gpflow.models.GPR(data=(X_train_tf, Y_train_tf), 
-                              kernel=kernel, 
-                              mean_function=gpflow.mean_functions.Constant(mean_scaled))
+                              kernel=kernel, mean_function=gpflow.mean_functions.Constant(mean_scaled))
+    
+     #We force the model to maintain a minimum baseline noise so the bounds don't disappear
+    bounded_transform_noise = tfp.bijectors.Sigmoid(
+        low=tf.constant(0.05, dtype=tf.float64),  # Lower bound for noise variance
+        high=tf.constant(2.0, dtype=tf.float64))
+    model.likelihood.variance = gpflow.Parameter(0.1, transform=bounded_transform_noise)
     
     # optimisation 
     opt = gpflow.optimizers.Scipy()
@@ -350,94 +359,7 @@ def plot_results(timestamps_train, Y_train, Y_pred_train, std_train,
     
     plt.tight_layout()
     plt.show()
-
-def plot_point_of_interest(target_date_str, timestamps, X_scaled, model, 
-                           scaler_Y, Y_actual=None, min_val=None, max_val=None):
-    """
-    Plots the full probability distribution (PDF) for a specific timestamp.
-    Visualizes the difference between Raw Mean, Truncated Mean, and Mode.
-    Also shows the actual sensor value and its position in the distribution.
-    """
-    target_ts = pd.to_datetime(target_date_str)
-    time_diffs = np.abs(timestamps - target_ts)
-    idx = np.argmin(time_diffs)
-    actual_ts = timestamps[idx]
-
-    print(f"Plotting Point: {actual_ts}")
     
-    # Getting Raw Parameters
-    x_input = X_scaled[idx].reshape(1, -1)
-    X_tf = tf.convert_to_tensor(x_input, dtype=tf.float64)
-    mean_sc, var_sc = model.predict_y(X_tf)
-    
-    # Unscale
-    mu_raw = scaler_Y.inverse_transform(mean_sc.numpy())[0][0]
-    sigma_raw = (np.sqrt(var_sc.numpy()) * scaler_Y.scale_)[0][0]
-    
-    # Truncation Bounds (Z-scores)
-    a, b = -np.inf, np.inf
-    if min_val is not None: a = (min_val - mu_raw) / sigma_raw
-    if max_val is not None: b = (max_val - mu_raw) / sigma_raw
-    
-    # MEAN (Center of Mass) - This is what your prediction() function returns
-    mu_truncated = truncnorm.mean(a, b, loc=mu_raw, scale=sigma_raw)
-    
-    # MODE (Highest Peak) - Visually where the curve is highest
-    if mu_raw < (min_val if min_val else -np.inf):
-        mode_truncated = min_val
-    elif mu_raw > (max_val if max_val else np.inf):
-        mode_truncated = max_val
-    else:
-        mode_truncated = mu_raw
-        
-    # x-axis range
-    x_min = mu_raw - 4*sigma_raw
-    if min_val is not None: x_min = min(x_min, min_val - 10)
-    x_max = mu_raw + 4*sigma_raw
-    if max_val is not None: x_max = max(x_max, max_val + 10)
-    
-    x_axis = np.linspace(x_min, x_max, 1000)
-    y_pdf = truncnorm.pdf(x_axis, a, b, loc=mu_raw, scale=sigma_raw)
-    
-    fig, ax = plt.subplots(figsize=(10, 6))
-    ax.plot(x_axis, y_pdf, 'b-', lw=2, label='Probability Density')
-    ax.fill_between(x_axis, y_pdf, alpha=0.1, color='blue')
-    
-    # A. Raw Mean (Where the bell curve WANTS to be)
-    ax.axvline(mu_raw, color='red', linestyle=':', linewidth=2, 
-               label=f'Raw Mean ({mu_raw:.1f})')
-    
-    # B. Truncated Mean (Prediction - Center of Mass)
-    ax.axvline(mu_truncated, color='green', linestyle='-', linewidth=2, 
-               label=f'Constrained Prediction ({mu_truncated:.1f})')
-    
-    # C. Actual Sensor Value (if provided)
-    if Y_actual is not None:
-        actual_value = Y_actual[idx]
-        # Handle numpy array by converting to scalar
-        if isinstance(actual_value, np.ndarray):
-            actual_value = actual_value.item() if actual_value.size == 1 else actual_value[0]
-        # Calculate the PDF value at the actual point
-        pdf_at_actual = truncnorm.pdf(actual_value, a, b, loc=mu_raw, scale=sigma_raw)
-        ax.plot(actual_value, pdf_at_actual, 'o', color='orange', markersize=12, 
-                label=f'Actual Sensor Value ({actual_value:.1f})', zorder=5, markeredgewidth=2, 
-                markeredgecolor='darkorange')
-    
-    # Plot Constraints
-    if min_val is not None:
-        ax.axvline(min_val, color='k', linewidth=3, label='Min Constraint')
-    if max_val is not None:
-        ax.axvline(max_val, color='k', linewidth=3, label='Max Constraint')
-    
-    ax.set_title(f"Prediction Distribution at {actual_ts}", fontsize=14)
-    ax.set_xlabel("CSO (l/s)", fontsize=12)
-    ax.set_ylabel("Probability", fontsize=12)
-    ax.legend()
-    ax.grid(True, alpha=0.3)
-    
-    plt.tight_layout()
-    plt.show()
-
 def main():
     total_start = time.perf_counter()
     print("="*70 + "\nNaive CSO GPR Prediction\n" + "="*70)
@@ -500,9 +422,32 @@ def main():
                  timestamps_test, Y_test, Y_pred_test, std_test_y,
                  min_level=min_flow, max_level=max_flow,
                  sample_date=sample_date)
-    plot_point_of_interest(sample_date, timestamps_test,
-                           X_test_scaled, model, scaler_Y, Y_actual=Y_test,
-                           min_val=min_flow, max_val=max_flow)
 
+
+    # saving figures for a later use 
+    results_data = {
+        'train': {
+            'time': timestamps_train,
+            'actual': Y_train.ravel(),
+            'pred': Y_pred_train.ravel(),
+            'std': std_train_y.ravel()  
+        },
+        'test': {
+            'time': timestamps_test,
+            'actual': Y_test.ravel(),
+            'pred': Y_pred_test.ravel(),
+            'std': std_test_y.ravel()
+        },
+        'metadata': {
+            'train_days': train_days,
+            'test_hours': test_hours
+        }
+    }
+    save_path = BASE / "results" / "CSO_outputs" / "2019_CSO_GPR_constrained.pkl"
+    with open(save_path, 'wb') as f:
+        pickle.dump(results_data, f)
+    print(f"Data successfully saved to: {save_path}")
+    
 if __name__ == "__main__":
     main()
+
