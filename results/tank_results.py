@@ -20,13 +20,13 @@ folder = Path(__file__).parent
 # Each tuple: (pickle_path, subplot_title, min_flow, max_flow)
 # Set min_flow / max_flow to None for runs WITHOUT constraints.
 RUNS = [
-    (folder / "CSO_outputs" / "2021_CSO_GPR_naive.pkl", "Naive Model",  None,  None),
-    (folder / "CSO_outputs" / "2021_CSO_GPR_constrained.pkl", "Constrained Model",  0.0, None),
-    (folder / "CSO_outputs" / "2021_CSO_SGPR_stratified_M250.pkl", "Constrained Sparse Model - 30 Days Training",  0.0, None),
-    (folder / "CSO_outputs" / "2021_CSO_SGPR_stratified_M250_90daystrain.pkl", "Constrained Sparse Model - 90 Days Training",  0.0, None),
+    (folder / "Tank_level_outputs" / "2019_Tank_GPR_naive.pkl", "Naive",  None,  None),
+    (folder / "Tank_level_outputs" / "2019_Tank_GPR_kernel.pkl", "Designed Kernel",  None,  None),
+    (folder / "Tank_level_outputs" / "2019_Tank_GPR_mean.pkl", "Kernel + Mean Function ", None,  None),
+    (folder / "Tank_level_outputs" / "2019_Tank_GPR_constraints.pkl", "Constrained",  0.0, 3800.0),
 ]
 
-OUTPUT_PATH = folder / "CSO_outputs" / "CSO_SGPR_2021_models_Fig7.png"
+OUTPUT_PATH = folder / "Tank_level_outputs" / "TankLevel_GPR_2019_models_Fig8.png"
 # ──────────────────────────────────────────────────────────────────────────────
 
 
@@ -89,7 +89,7 @@ def plot_single_panel(ax, data, title,
     # --- Formatting ------------------------------------------------------------
     ax.set_title(title, fontsize=10, fontweight="bold")
     if show_ylabel:
-        ax.set_ylabel("CSO (L/s)", fontsize=9)
+        ax.set_ylabel("Water Level (mm)", fontsize=9)
     if show_xlabel:
         ax.set_xlabel("Date", fontsize=9)
 
@@ -98,7 +98,7 @@ def plot_single_panel(ax, data, title,
     plt.setp(ax.get_xticklabels(), rotation=30, ha="right", fontsize=8)
     ax.tick_params(axis="y", labelsize=8)
     ax.grid(True, alpha=0.25, linewidth=0.5)
-    ax.set_ylim(-500, 1500)
+    ax.set_ylim(-500, 5000)
 
 
 def main():
@@ -126,7 +126,7 @@ def main():
                fontsize=8.5, frameon=True,
                bbox_to_anchor=(0.5, 0.02))
 
-    fig.suptitle("CSO Prediction — Comparison Across GPR Models, 2021",
+    fig.suptitle("Tank Level Prediction — Comparison Across GPR Models, 2019",
                  fontsize=12, fontweight="bold", y=1.01)
 
     plt.tight_layout(rect=[0, 0.10, 1, 1])
