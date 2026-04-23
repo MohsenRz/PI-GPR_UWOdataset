@@ -87,16 +87,16 @@ def plot_single_panel(ax, data, title,
                    label=f"Max constraint ({max_flow} L/s)")
     """
     # --- Formatting ------------------------------------------------------------
-    ax.set_title(title, fontsize=10, fontweight="bold")
+    ax.set_title(title, fontsize=11, fontweight="bold")
     if show_ylabel:
-        ax.set_ylabel("CSO (L/s)", fontsize=9)
+        ax.set_ylabel("CSO (L/s)", fontsize=10)
     if show_xlabel:
-        ax.set_xlabel("Date", fontsize=9)
+        ax.set_xlabel("Date", fontsize=10)
 
     ax.xaxis.set_major_formatter(mdates.DateFormatter("%m-%d"))
     ax.xaxis.set_major_locator(mdates.DayLocator(interval=5))
-    plt.setp(ax.get_xticklabels(), rotation=30, ha="right", fontsize=8)
-    ax.tick_params(axis="y", labelsize=8)
+    plt.setp(ax.get_xticklabels(), rotation=45, ha="right", fontsize=9)
+    ax.tick_params(axis="y", labelsize=9)
     ax.grid(True, alpha=0.25, linewidth=0.5)
     ax.set_ylim(-500, 1500)
 
@@ -123,11 +123,11 @@ def main():
             all_labels.setdefault(l, h)   # first occurrence wins
     fig.legend(all_labels.values(), all_labels.keys(),
                loc="lower center", ncol=4,
-               fontsize=8.5, frameon=True,
+               fontsize=10.5, frameon=True,
                bbox_to_anchor=(0.5, 0.02))
 
     fig.suptitle("CSO Prediction — Comparison Across GPR Models, 2021",
-                 fontsize=12, fontweight="bold", y=1.01)
+                 fontsize=13, fontweight="bold", y=1.01)
 
     plt.tight_layout(rect=[0, 0.10, 1, 1])
     plt.savefig(OUTPUT_PATH, dpi=300, bbox_inches="tight")

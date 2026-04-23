@@ -320,6 +320,8 @@ def plot_results(timestamps_train, Y_train, Y_pred_train, std_train,
                     alpha=0.2, color='red', label='95% CI (Test)')
     ax.axvline(x=timestamps_train[-1], color='black', linestyle='--', 
                linewidth=1.5, label='Prediction Start', zorder=5)
+    ax.axhline(y=overflow_level, color='red', linestyle='--', 
+               linewidth=1.5, label=f'Spill Level ({overflow_level} mm)', zorder=1)
     if sample_date is not None:
         sample_ts = pd.to_datetime(sample_date)
         ax.axvline(x=sample_ts, color='purple', linestyle=':', 
@@ -329,6 +331,7 @@ def plot_results(timestamps_train, Y_train, Y_pred_train, std_train,
     ax.legend(fontsize=11, loc='best')
     ax.grid(True, alpha=0.3)
     ax.set_ylim(-1000, 4000)
+    ax.xaxis.set_major_formatter(mdates.DateFormatter('%d/%m'))
     
     # --- CSO probability subplot ---
     Z_scores = (overflow_level - Y_pred_test.ravel()) / std_test.ravel()
@@ -359,7 +362,7 @@ def plot_results(timestamps_train, Y_train, Y_pred_train, std_train,
     plt.xticks(rotation=45)
 
     plt.tight_layout()
-    plt.savefig(BASE / "results" / "Tank_level_outputs" / "2021_Tank_GPR_constraints_fig8.png", dpi=300)
+    plt.savefig(BASE / "results" / "Tank_level_outputs" / "2021_Tank_GPR_mean_fig8.png", dpi=300)
     plt.show()
 
 def main():
@@ -442,7 +445,7 @@ def main():
             'test_hours': test_hours
         }
     }
-    save_path = BASE / "results" / "Tank_level_outputs" / "2021_Tank_GPR_constraints.pkl"
+    save_path = BASE / "results" / "Tank_level_outputs" / "2021_Tank_GPR_mean.pkl"
     with open(save_path, 'wb') as f:
         pickle.dump(results_data, f)
     print(f"Data successfully saved to: {save_path}")
