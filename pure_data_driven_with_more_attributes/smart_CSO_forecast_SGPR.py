@@ -2,7 +2,9 @@
 making a Gaussian Process Regression model for CSO prediction
 sensor data is used 
 this is a naive model that only takes CSO data for predictions 
-automatic lag time detection is used to find the optimal lag time for precipitation data
+automatic lag time detection is used to find the optimal lag time for precipitation data in short term
+a new attribute is added: long-term accumulated precipitation, to see the effect in filling the upstream tank
+the CSO events will be classified based on their value.  
 Author: Mohsen 
 Date: 03/03/2026
 """
@@ -15,7 +17,7 @@ import gpflow
 from sklearn.preprocessing import StandardScaler
 import matplotlib.dates as mdates
 import time
-from scipy.stats import norm
+from scipy.cluster.vq import kmeans
 from pathlib import Path
 import tensorflow_probability as tfp
 
@@ -34,14 +36,17 @@ CSO['timestamp'] = pd.to_datetime(CSO['timestamp'])
 precipitation['timestamp'] = pd.to_datetime(precipitation['timestamp'])
 
 # train parameters 
-train_start_time = pd.to_datetime("2019-2-01 00:00:00")
-train_days = 40  # Number of days for training
+train_start_time = pd.to_datetime("2019-08-01 00:00:00")
+train_days = 90  # Number of days for training
 train_end_time = train_start_time + pd.Timedelta(days=train_days)
 
 # test parameters
 test_hours = 5 * 24  # Hours to predict
 test_end_time = train_end_time + pd.Timedelta(hours=test_hours)
 timeinterval = 15 # minutes 
+
+# inducing points 
+M = 500
 
 CSO_train = CSO[(CSO['timestamp'] >= train_start_time) & (CSO['timestamp'] <= train_end_time)]
 precipitation_train = precipitation[(precipitation['timestamp'] >= train_start_time) & (precipitation['timestamp'] <= train_end_time)]
@@ -77,7 +82,7 @@ print(f"Test samples: {len(merged_test)}")
 print(f"Data statistics: mean daily CSO = {average_CSO*3.6*24:.1f} m3,\
       mean precipitation = {merged_train.filter(like='precipitation').mean().values[0]*24/timeinterval:.2f} mm/day")
 
-def find_optimal_rain_lag(merged_data, interval_minutes, max_lag_hours=24, lag_step_minutes=15):
+def find_optimal_short_term_rain_lag(merged_data, interval_minutes, max_lag_hours=2, lag_step_minutes=15):
     """
     Perform cross-correlation analysis to find optimal precipitation lag.
     
@@ -112,7 +117,7 @@ def find_optimal_rain_lag(merged_data, interval_minutes, max_lag_hours=24, lag_s
     # Find optimal lag
     optimal_lag = max(correlations, key=correlations.get)
     
-   
+    """
     # Plot results
     plt.figure(figsize=(10, 5))
     lags = list(correlations.keys())
@@ -127,38 +132,89 @@ def find_optimal_rain_lag(merged_data, interval_minutes, max_lag_hours=24, lag_s
     plt.legend()
     plt.tight_layout()
     plt.show()
- 
+    """
     print(f"\nOptimal precipitation lag: {optimal_lag} minutes")
     print(f"Max correlation: {correlations[optimal_lag]:.3f}")
     
     return optimal_lag, correlations
 
-def preparing_data(merged_data, start_time, interval_minutes=timeinterval, lag_minutes=120): 
+def preparing_data(merged_data, start_time, interval_minutes=timeinterval, 
+                   short_lag_minutes=120, long_lag_hours=24): 
     #creating multi dimensional input as timestamps and precipitation data
     timestamps = merged_data.index
     inflow_col = [col for col in merged_data.columns if 'inflow' in col.lower()][0]
     precip_col = [col for col in merged_data.columns if 'precipitation' in col.lower()][0]
     
     time_feat = np.array([(ts - start_time).total_seconds() / 60.0 for ts in timestamps]).reshape(-1, 1)  # time in minutes
-    ## I sum up the previous 60 mins precipitation to consider lag effect
-    # Calculate window size dynamically
-    window_size = int(lag_minutes / interval_minutes) 
-    if window_size < 1: window_size = 1
     
     rain_series = merged_data[precip_col]
-    # rolling sum, fill NaN at start with 0
-    rain_accum = rain_series.rolling(window=window_size).sum().fillna(0).values.reshape(-1, 1)
+    
+    ## Feature ONE: Short-term accumulated precipitation
+    # Calculate window size dynamically
+    window_size_short = int(short_lag_minutes / interval_minutes) 
+    if window_size_short < 1: window_size_short = 1
+    rain_short = rain_series.rolling(window=window_size_short).sum().fillna(0).values.reshape(-1, 1)
+    
+    ## Feature TWO: Long-term accumulated precipitation
+    window_size_long = int(long_lag_hours * 60 / interval_minutes)
+    if window_size_long < 1: window_size_long = 1
+    rain_long = rain_series.rolling(window=window_size_long).sum().fillna(0).values.reshape(-1, 1)
     
     inflow = merged_data[inflow_col].values.reshape(-1, 1)
     
-    X_multi = np.hstack((time_feat, rain_accum))
+    X_multi = np.hstack((time_feat, rain_short, rain_long))
     Y = inflow
         
     return X_multi, Y, timestamps
 
-def build_gpr_model(X_train, Y_train, time_std_dev):
+def initialize_smart_inducing_points(X_train, Y_train, total_M, scaled_threshold):
+    print("\nInitializing Stratified Inducing Points...")
+    
+    # Identify indices above and below the threshold
+    is_above = (Y_train > scaled_threshold).flatten()
+    is_below = ~is_above
+    
+    X_above = X_train[is_above]
+    X_below = X_train[is_below]
+    
+    # Allocate 50% to active periods, 50% to flat periods
+    M_above = int(total_M * 0.5)
+    M_below = total_M - M_above
+    
+    print(f"  - Points > average level: {len(X_above)}. Allocating {M_above} inducing points.")
+    print(f"  - Points <= average level: {len(X_below)}. Allocating {M_below} inducing points.")
+    
+    # K-means for ABOVE average
+    if len(X_above) > M_above:
+        Z_above, _ = kmeans(X_above, M_above)
+    elif len(X_above) > 0:
+        Z_above = X_above
+    else:
+        Z_above = np.empty((0, X_train.shape[1]))
+        
+    # K-means for BELOW average
+    if len(X_below) > M_below:
+        Z_below, _ = kmeans(X_below, M_below)
+    elif len(X_below) > 0:
+        Z_below = X_below
+    else:
+        Z_below = np.empty((0, X_train.shape[1]))
+        
+    Z_combined = np.vstack([Z_above, Z_below])
+    
+    # Safety net: ensure we have exactly total_M points (in case of shortages)
+    if len(Z_combined) < total_M:
+        shortage = total_M - len(Z_combined)
+        idx = np.random.choice(len(X_train), shortage, replace=False)
+        Z_combined = np.vstack([Z_combined, X_train[idx]])
+    elif len(Z_combined) > total_M:
+        Z_combined = Z_combined[:total_M, :]
+        
+    return Z_combined
+
+def build_sgpr_model(X_train, Y_train, time_std_dev, threshold_scaled):
     """
-    Build and train GPR model
+    Build and train SGPR model
     X_train: Scaled training data 
     Y_train: Scaled target data
     time_std_dev: the scaling factor (std) of the Time Column from scalara_X.scale_[0]
@@ -171,19 +227,33 @@ def build_gpr_model(X_train, Y_train, time_std_dev):
     time_kernel = gpflow.kernels.RBF(lengthscales=scaled_period) 
     
     ### rain kernel 
-    kernel_rain = gpflow.kernels.Matern12(variance=1, active_dims=[1])
-    bounded_transform_rain = tfp.bijectors.Sigmoid(
+    kernel_rain_short = gpflow.kernels.Matern12(variance=1, active_dims=[1])
+    bounded_transform_rain_short = tfp.bijectors.Sigmoid(
         low=tf.constant(0.1, dtype=tf.float64), 
         high=tf.constant(1, dtype=tf.float64)) 
-    kernel_rain.lengthscales = gpflow.Parameter(0.5, transform=bounded_transform_rain)
+    kernel_rain_short.lengthscales = gpflow.Parameter(0.5, transform=bounded_transform_rain_short)
     
-    kernel = kernel_rain + time_kernel
+    kernel_rain_long = gpflow.kernels.Matern52(variance=1, active_dims=[2])
+    bounded_transform_rain_long = tfp.bijectors.Sigmoid(
+        low=tf.constant(1, dtype=tf.float64), 
+        high=tf.constant(5, dtype=tf.float64)) 
+    kernel_rain_long.lengthscales = gpflow.Parameter(3, transform=bounded_transform_rain_long)
+    
+    kernel = kernel_rain_short +kernel_rain_long + time_kernel
+    
+    # --- STRATIFIED SPARSIFICATION ---
+    num_inducing = min(M, X_train.shape[0]//2)
+    Z_init = initialize_smart_inducing_points(X_train, Y_train, num_inducing, threshold_scaled)
+    Z = tf.convert_to_tensor(Z_init, dtype=tf.float64)
     
     X_train_tf = tf.convert_to_tensor(X_train, dtype=tf.float64)
     Y_train_tf = tf.convert_to_tensor(Y_train, dtype=tf.float64)
     
-    model = gpflow.models.GPR(data=(X_train_tf, Y_train_tf), 
-                              kernel=kernel, mean_function=None)
+    model = gpflow.models.SGPR(data=(X_train_tf, Y_train_tf), 
+                               inducing_variable=Z, kernel=kernel, 
+                               mean_function=None)
+    # freezing inducing points 
+    gpflow.set_trainable(model.inducing_variable, True)
     
     # optimisation 
     opt = gpflow.optimizers.Scipy()
@@ -225,9 +295,11 @@ def model_evaluation(Y_true, Y_pred, std_pred):
     }
     
 def plot_results(timestamps_train, Y_train, Y_pred_train, std_train,
-                 timestamps_test, Y_test, Y_pred_test, std_test):
+                 timestamps_test, Y_test, Y_pred_test, std_test,
+                 Z_timestamps=None, Z_values=None):
     """
     Plot training and test results with uncertainty.
+    inducing points are shown 
     """
     fig, ax = plt.subplots(figsize=(12, 6))
     
@@ -240,7 +312,11 @@ def plot_results(timestamps_train, Y_train, Y_pred_train, std_train,
                     Y_pred_train.ravel() - 1.96 * std_train.ravel(),
                     Y_pred_train.ravel() + 1.96 * std_train.ravel(),
                     alpha=0.2, color='green', label='95% CI (Training)', zorder=2)
-    
+    # plotting inducing points 
+    if Z_timestamps is not None and Z_values is not None:
+        ax.scatter(Z_timestamps, Z_values.ravel(), c='purple', s=50, 
+                   label='Inducing Points', marker='|', zorder=5)
+        
     # plotting test data
     ax.scatter(timestamps_test, Y_test.ravel(), c='orange', s=15,
                label='Test Data (Actual)', alpha=0.7, zorder=3)
@@ -257,8 +333,8 @@ def plot_results(timestamps_train, Y_train, Y_pred_train, std_train,
     
     # Formatting
     ax.set_xlabel('Date', fontsize=12)
-    ax.set_ylabel('WWTP Inflow', fontsize=12)
-    ax.set_title(f'GPR: WWTP Inflow Prediction (Train: {train_days} days, Test: {test_hours} hours)', 
+    ax.set_ylabel('CSO (L/s)', fontsize=12)
+    ax.set_title(f'GPR: CSO Prediction (Train: {train_days} days, Test: {test_hours} hours)', 
                  fontsize=14)
     ax.legend(fontsize=11, loc='best')
     ax.grid(True, alpha=0.3)
@@ -277,10 +353,11 @@ def main():
     
     # Find optimal lag
     print("\nPerforming cross-correlation analysis...")
-    optimal_lag, correlations = find_optimal_rain_lag(merged_train, timeinterval)
+    optimal_lag, correlations = find_optimal_short_term_rain_lag(merged_train, timeinterval)
 
     # Prepare training data with optimal lag
-    X_train, Y_train, timestamps_train = preparing_data(merged_train, train_start_time, timeinterval, lag_minutes=optimal_lag)
+    X_train, Y_train, timestamps_train = preparing_data(merged_train, train_start_time, timeinterval, 
+                                                        short_lag_minutes=optimal_lag, long_lag_hours=24)
     
     # Standardize
     scaler_X = StandardScaler()
@@ -288,9 +365,13 @@ def main():
     X_train_scaled = scaler_X.fit_transform(X_train)
     Y_train_scaled = scaler_Y.fit_transform(Y_train)
     
+    # The average_tank_level is physical data. We must scale it to match Y_train_scaled.
+    threshold_scaled = scaler_Y.transform([[average_CSO]])[0, 0]
+    
     print("\nTraining GPR model...")
     # Pass Time Std Dev for Period Calculation
-    model = build_gpr_model(X_train_scaled, Y_train_scaled, scaler_X.scale_[0])
+    model = build_sgpr_model(X_train_scaled, Y_train_scaled, scaler_X.scale_[0], 
+                             threshold_scaled)
     
     # --- PREDICTION ON TRAIN ---
     X_train_tf = tf.convert_to_tensor(X_train_scaled, dtype=tf.float64)
@@ -302,7 +383,8 @@ def main():
     std_train_f = np.sqrt(var_train_f_sc.numpy()) * scaler_Y.scale_
     
     # --- PREDICTION ON TEST ---
-    X_test, Y_test, timestamps_test = preparing_data(merged_test, train_start_time, timeinterval, lag_minutes=optimal_lag)
+    X_test, Y_test, timestamps_test = preparing_data(merged_test, train_start_time, timeinterval, 
+                                                     short_lag_minutes=optimal_lag, long_lag_hours=24)
     X_test_scaled = scaler_X.transform(X_test)
     
     print(f"\nGenerating {test_hours}-hour predictions...")
@@ -314,6 +396,14 @@ def main():
     Y_pred_test = scaler_Y.inverse_transform(mean_test_sc.numpy())
     std_test_y = np.sqrt(var_test_y_sc.numpy()) * scaler_Y.scale_
     std_test_f = np.sqrt(var_test_f_sc.numpy()) * scaler_Y.scale_
+    
+    # Extracting inducing points for plotting
+    Z_scaled = model.inducing_variable.Z.numpy()
+    Z_unscaled = scaler_X.inverse_transform(Z_scaled)
+    Z_time_minutes = Z_unscaled[:, 0]
+    Z_timestamps = [train_start_time + pd.Timedelta(minutes=float(tm)) for tm in Z_time_minutes]
+    mu_Z_scaled, _ = model.predict_f(Z_scaled)
+    Z_values = scaler_Y.inverse_transform(mu_Z_scaled.numpy())
     
     # --- COMPARISON TABLE ---
     train_metrics = model_evaluation(Y_train, Y_pred_train, std_train_y)
@@ -335,7 +425,8 @@ def main():
     print("Prediction complete!")
     #--- PLOTTING ---
     plot_results(timestamps_train, Y_train, Y_pred_train, std_train_y,
-                 timestamps_test, Y_test, Y_pred_test, std_test_y)
+                 timestamps_test, Y_test, Y_pred_test, std_test_y,
+                 Z_timestamps=Z_timestamps, Z_values=Z_values)
 
 if __name__ == "__main__":
     main()
