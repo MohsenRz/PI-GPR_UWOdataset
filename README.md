@@ -12,21 +12,34 @@ This repository provides a probabilistic framework using physics-informed Gaussi
 
 ## 🗂️ Repository Structure
 
-The code is modularized into specific folders to separate the different forecasting objectives discussed in the paper:
+The code is modularised into specific folders to separate the different forecasting objectives discussed in the paper:
 
-* 📁 **`basic_models/`** *(Note: Rename this to match your actual folder name if different)*
-  * Contains the shared baseline GPR models, kernel definitions, and utility scripts used across the project.
-* 📁 **`WWTP_forecasting/`** 
-  * Contains the data preprocessing, model scripts, and results for predicting the WWTP inflow (as discussed in Sections 3.1 & 3.2).
-* 📁 **`CSO_forecasting/`** 
+* 📁 **`data/`** 
+  * Contains the SWMM models and reference data provided by the UWO dataset.
+* 📁 **`WWTP_flow_prediction/`** 
+  * Contains the model scripts and results for predicting the WWTP inflow (as discussed in Sections 3.1 & 3.2).
+* 📁 **`CSO_prediction/`** 
   * Contains the scripts and results for direct CSO prediction, Tank Level forecasting, and the novel stratified SGPR models (as discussed in Sections 3.3, 3.4, & 3.5).
-* 📄 **`requirements.txt`** 
-  * List of Python dependencies required to run the models.
+* 📄 **`environment.yml`** 
+  * Conda environment file with all Python dependencies required to run the models.
+* 📄 **`calling_data.py`**
+  * Script for loading and processing raw data from the external data source.
+
+## 🌿 Branches
+For full datasets, extended results, and additional scripts, see the dedicated branches:
+- [**`WWTP_inflow_forecasting`**](https://github.com/MohsenRz/PI-GPR_UWOdataset/tree/WWTP_inflow_forecasting) — Full data and results for WWTP inflow prediction. 
+- [**`CSO_prediction`**](https://github.com/MohsenRz/PI-GPR_UWOdataset/tree/CSO_forecasting) — Full data and results for CSO and tank level forecasting.
+
+## 📦 Data
+Raw data files are not included in this repository due to size constraints. The original datasets can be accessed from the UWO Dataset available at: [Eawag Open Data - UWO Field Observations](https://opendata.eawag.ch/dataset/uwo_field-observations_2019_to_2021)
+
+Once downloaded, please use the provided `calling_data.py` script to process the raw data and convert them into `.pkl` (pickle) files for efficient model training.
 
 ## ⚙️ Installation & Setup
 
-To replicate the results or run the models locally, clone this repository and install the required dependencies. It is recommended to use a virtual environment.
+Clone this repository and recreate the conda environment:
 ```bash
-git clone [https://github.com/YOUR-USERNAME/YOUR-REPO-NAME.git](https://github.com/YOUR-USERNAME/YOUR-REPO-NAME.git)
-cd YOUR-REPO-NAME
-pip install -r requirements.txt
+git clone [https://github.com/MohsenRz/PI-GPR_UWOdataset.git](https://github.com/MohsenRz/PI-GPR_UWOdataset.git)
+cd PI-GPR_UWOdataset
+conda env create -f environment.yml
+conda activate myenv1
