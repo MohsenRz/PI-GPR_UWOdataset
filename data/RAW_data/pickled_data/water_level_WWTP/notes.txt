@@ -1,0 +1,4 @@
+the data from the sensor dl257 have a lot of errors. 
+the data from the sensor dl899 have also some anomalies which seems suitable for anomaly detection. 
+
+From Dec 2019 the dl899 sensor is the suitable one. Before Dec 2019, dl257 seems fine.

@@ -1,0 +1,2 @@
+data are erroneous. they start from -5000mm where is the base of the tank. when it reaches 0 it means that the tank is filled and the water is overflowing through the weir crest. 
+some anomalies can be detected. 

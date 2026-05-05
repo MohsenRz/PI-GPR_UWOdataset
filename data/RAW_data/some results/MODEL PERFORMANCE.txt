@@ -1,0 +1,87 @@
+MODEL PERFORMANCE
+==================================================
+                Training Set  Test Set
+RMSE (L/s)           10.8968   19.0753
+MAE (L/s)             7.8668   15.7704
+Coverage (%)         96.6287  100.0000
+Entropy (nats)        5.7460    7.1778
+
+reducing daily l to 4 hours 
+                Training Set  Test Set
+RMSE (L/s)            9.8006   14.9072
+MAE (L/s)             7.0446   12.2046
+Coverage (%)         99.1076  100.0000
+Entropy (nats)        5.9148    6.7677
+
+reducing daily l to 2 hours 
+MODEL PERFORMANCE
+==================================================
+                Training Set  Test Set
+RMSE (L/s)           10.4377   14.8342
+MAE (L/s)             7.4907   11.9322
+Coverage (%)         99.4051  100.0000
+Entropy (nats)        6.0775    6.9787
+
+increasing daily l to 8 hours 
+MODEL PERFORMANCE
+==================================================
+                Training Set  Test Set
+RMSE (L/s)            8.8894   16.8818
+MAE (L/s)             6.5332   14.6941
+Coverage (%)         97.9673  100.0000
+Entropy (nats)        5.5936    6.7481
+
+trend = 3 days 
+MODEL PERFORMANCE
+==================================================
+                Training Set  Test Set
+RMSE (L/s)           11.6159   10.2645
+MAE (L/s)             8.3504    8.0866
+Coverage (%)         97.4219  100.0000
+Entropy (nats)        5.9049    7.0621
+
+
+rain: l = 0.01 , var = 1
+MODEL PERFORMANCE
+==================================================
+                Training Set  Test Set
+RMSE (L/s)           11.5637   10.3196
+MAE (L/s)             8.2791    8.1122
+Coverage (%)         97.6202  100.0000
+Entropy (nats)        5.9248    7.0297
+
+l = 0.05, var = 0.5
+MODEL PERFORMANCE
+==================================================
+                Training Set  Test Set
+RMSE (L/s)           11.5497   10.1923
+MAE (L/s)             8.2788    8.0134
+Coverage (%)         97.6698  100.0000
+Entropy (nats)        5.9214    7.0334
+
+with 0.5hr lag for rain 
+MODEL PERFORMANCE
+==================================================
+                Training Set  Test Set
+RMSE (L/s)           11.1751    9.9930
+MAE (L/s)             8.0769    7.8582
+Coverage (%)         97.8185  100.0000
+Entropy (nats)        5.8955    7.0242
+
+60 days of training and 7 days of test 
+==================================================
+                Training Set  Test Set
+RMSE (L/s)           11.6904   16.8231
+MAE (L/s)             7.3521   11.8016
+Coverage (%)         96.6325   95.0966
+Entropy (nats)        5.8598    6.1650
+==================================================
+
+90 days train 7  days test 
+==================================================
+                Training Set  Test Set
+RMSE (L/s)           13.0211   26.9848
+MAE (L/s)             8.3729   17.7622
+Coverage (%)         96.1000   87.0728
+Entropy (nats)        5.9554    6.2423
+==================================================

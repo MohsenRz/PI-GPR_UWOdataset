@@ -1,0 +1,86 @@
+Training period: 2019-02-01 00:00:00 to 2019-03-03 00:00:00 (30 days)
+Test period: 2019-03-03 00:00:00 to 2019-03-08 00:00:00 (120 hours)
+Training samples: 2881
+Test samples: 481
+Data statistics: mean inflow = 63.45 L/s,      mean precipitation = 1.77 mm/day
+
+run time: 228 s
+
+MODEL PERFORMANCE
+==================================================
+                Training Set  Test Set
+RMSE (L/s)           11.3255   13.3795
+MAE (L/s)             7.5442   10.1655
+Coverage (%)         96.5290   97.9210
+Entropy (nats)        5.7898    6.0421
+
+SGPR:
+M = 300 : visually poor results 
+run time: 54 s
+
+MODEL PERFORMANCE
+==================================================
+                Training Set  Test Set
+RMSE (L/s)           20.7081   17.5353
+MAE (L/s)            15.0837   13.9325
+Coverage (%)         96.2166   99.5842
+Entropy (nats)        6.5686    6.5595
+
+M = 400: visually great 
+run time: 814 s
+
+MODEL PERFORMANCE
+==================================================
+                Training Set  Test Set
+RMSE (L/s)           13.8998   11.2554
+MAE (L/s)             9.3853    8.9664
+Coverage (%)         96.0083   99.7921
+Entropy (nats)        6.0488    6.1961
+
+M = 500: visually good 
+run time: 475 s
+
+MODEL PERFORMANCE
+==================================================
+                Training Set  Test Set
+RMSE (L/s)           13.8788   11.2053
+MAE (L/s)             9.3749    8.9363
+Coverage (%)         96.2513   99.7921
+Entropy (nats)        6.0528    6.2205
+
+M = 500, no optimisation for inducing points , good visual 
+run time: 18 s
+
+MODEL PERFORMANCE
+==================================================
+                Training Set  Test Set
+RMSE (L/s)           13.0953   13.7801
+MAE (L/s)             8.7587   10.9872
+Coverage (%)         96.2860   98.5447
+Entropy (nats)        5.9962    6.1569
+
+M = 400, no optimisation for inducing points , good visual
+run time: 14 s
+
+MODEL PERFORMANCE
+==================================================
+                Training Set  Test Set
+RMSE (L/s)           14.0154   12.0821
+MAE (L/s)             9.3982    9.7600
+Coverage (%)         95.9736   99.7921
+Entropy (nats)        6.0662    6.1853
+
+M = 300, no optimisation for inducing points , good visual
+run time: 12 s
+
+MODEL PERFORMANCE
+==================================================
+                Training Set  Test Set
+RMSE (L/s)           14.4610   12.1215
+MAE (L/s)             9.6646    9.8191
+Coverage (%)         95.8001   99.3763
+Entropy (nats)        6.1101    6.1978
+
+
+
+

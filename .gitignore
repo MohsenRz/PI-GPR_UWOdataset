@@ -1,6 +1,16 @@
-RAW_data/
+# Ignore contents of RAW_data but keep the folder
+RAW_data/*
+!RAW_data/.gitkeep
+!RAW_data/README.md
+
+# Large / generated files
 *.pkl
+*.sqlite
 *.SQLite
 *.csv
+
+# Python cache
 __pycache__/
+
+# VS Code
 .vscode/
