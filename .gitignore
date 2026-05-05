@@ -2,6 +2,8 @@
 RAW_data/*
 !RAW_data/.gitkeep
 !RAW_data/README.md
+# ignoring unnecessary files
+data/RAW_data/some_results/
 
 # Large / generated files
 *.pkl
