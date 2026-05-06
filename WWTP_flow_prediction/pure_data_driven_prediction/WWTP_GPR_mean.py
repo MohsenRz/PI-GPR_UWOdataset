@@ -18,15 +18,15 @@ from pathlib import Path
 import tensorflow_probability as tfp
 
 ## Load Data
-BASE = Path(__file__).parent.parent
+BASE = Path(__file__).parent.parent.parent
 
-data_path = BASE / "RAW_data" / "pickled_data"
+data_path = BASE / "data" / "RAW_data" / "pickled_data"
 
 WWTP_inflow = pd.read_pickle(
     data_path / "inflow_WWTP" / "sensor_bf_plsZUL1100_inflow_ara_2019-01-01_to_2019-12-31.pkl")
 precipitation = pd.read_pickle(
     data_path / "precipitation" / "sensor_bn_r02_school_chatzenrainstr_2019_cleaned.pkl")
-mean_data = pd.read_csv( BASE / "faf_model" / "DWF_Mean_Function_WWTP_in_Seconds.csv")
+mean_data = pd.read_csv( BASE / "data" / "faf_model" / "DWF_Mean_Function_WWTP_in_Seconds.csv")
 
 ## Preprocess Data
 WWTP_inflow['timestamp'] = pd.to_datetime(WWTP_inflow['timestamp'])

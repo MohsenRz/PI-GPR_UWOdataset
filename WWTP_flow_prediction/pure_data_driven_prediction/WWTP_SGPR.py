@@ -19,9 +19,9 @@ from pathlib import Path
 import tensorflow_probability as tfp
 
 ## Load Data
-BASE = Path(__file__).parent.parent
+BASE = Path(__file__).parent.parent.parent
 
-data_path = BASE / "RAW_data" / "pickled_data"
+data_path = BASE / "data" / "RAW_data" / "pickled_data"
 
 WWTP_inflow = pd.read_pickle(
     data_path / "inflow_WWTP" / "sensor_bf_plsZUL1100_inflow_ara_2019-01-01_to_2019-12-31.pkl")

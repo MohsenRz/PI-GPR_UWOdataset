@@ -9,7 +9,6 @@ data/RAW_data/some_results/
 *.pkl
 *.sqlite
 *.SQLite
-*.csv
 
 # Python cache
 __pycache__/
