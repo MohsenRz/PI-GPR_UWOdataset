@@ -3,7 +3,7 @@
 [![Python 3.8+](https://img.shields.io/badge/python-3.8+-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-This repository contains the official code, models, and results for the paper **"Physics-Informed Gaussian Process Regression for Predicting Flow in an Urban Drainage System."** 
+This repository contains the official code, models, and results for the paper **"Physics-Informed Gaussian Process Regression for Predicting Flow in an Urban Drainage System."** The Preprint of the paper is available at https://doi.org/10.31224/7256 
 
 ## 📖 Overview
 Accurate forecasting of urban drainage flows is critical for mitigating environmental pollution and optimizing wastewater treatment. While purely data-driven models are computationally efficient, they often lack physical interpretation and produce unrealistic predictions. 
