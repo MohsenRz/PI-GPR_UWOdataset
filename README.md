@@ -1,14 +1,14 @@
-# Physics-Informed Gaussian Process Regression for Predicting Flow in an Urban Drainage System
+# Physics-Constrained Gaussian Process Regression for Predicting Flow in an Urban Drainage System
 
 [![Python 3.8+](https://img.shields.io/badge/python-3.8+-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-This repository contains the official code, models, and results for the paper **"Physics-Informed Gaussian Process Regression for Predicting Flow in an Urban Drainage System."** 
+This repository contains the official code, models, and results for the paper **"Physics-Constrained Gaussian Process Regression for Predicting Flow in an Urban Drainage System."** 
 
 ## 📖 Overview
 Accurate forecasting of urban drainage flows is critical for mitigating environmental pollution and optimizing wastewater treatment. While purely data-driven models are computationally efficient, they often lack physical interpretation and produce unrealistic predictions. 
 
-This repository provides a probabilistic framework using physics-informed Gaussian Process Regression (GPR) to forecast Wastewater Treatment Plant (WWTP) inflows, Combined Sewer Overflows (CSOs), and upstream tank levels. It includes implementations of domain-aware composite kernels, SWMM-derived prior mean functions, physical output constraints, and a novel **stratified Sparse GPR (SGPR)** method designed specifically for event-based time-series.
+This repository provides a probabilistic framework using Gaussian Process Regression (GPR) to forecast Wastewater Treatment Plant (WWTP) inflows, Combined Sewer Overflows (CSOs), and upstream tank levels. It includes implementations of domain-aware composite kernels, SWMM-derived prior mean functions, physical output constraints, and a novel **stratified Sparse GPR (SGPR)** method designed specifically for event-based time-series.
 
 ## 🗂️ Repository Structure
 

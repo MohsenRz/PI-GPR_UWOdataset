@@ -25,16 +25,16 @@ BASE = Path(__file__).parent.parent.parent
 data_path = BASE / "data" / "RAW_data" / "pickled_data"
 
 WWTP_inflow = pd.read_pickle(
-    data_path / "inflow_WWTP" / "sensor_bf_plsZUL1100_inflow_ara_2019-01-01_to_2019-12-31.pkl")
+    data_path / "inflow_WWTP" / "sensor_bf_plsZUL1100_inflow_ara_2021-01-01_to_2021-12-31.pkl")
 precipitation = pd.read_pickle(
-    data_path / "precipitation" / "sensor_bn_r02_school_chatzenrainstr_2019_cleaned.pkl")
+    data_path / "precipitation" / "sensor_bn_r02_school_chatzenrainstr_2021_cleaned.pkl")
 
 ## Preprocess Data
 WWTP_inflow['timestamp'] = pd.to_datetime(WWTP_inflow['timestamp'])
 precipitation['timestamp'] = pd.to_datetime(precipitation['timestamp'])
 
 # train parameters
-train_start_time = pd.to_datetime("2019-09-30 00:00:00")
+train_start_time = pd.to_datetime("2021-04-10 00:00:00")
 train_days = 30  # Number of days for training
 train_end_time = train_start_time + pd.Timedelta(days=train_days)
 
