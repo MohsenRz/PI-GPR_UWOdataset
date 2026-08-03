@@ -1,45 +1,46 @@
-"""
-making a Gaussian Process Regression model for CSO prediction + kernel design + mean function + constraints
-sensor data is used 
-Stratified sparsification is used to use inducing points in a more smart manner 
-inducing points are spread in defined regions 
-automatic lag time detection is used to find the optimal lag time for precipitation data in short term
-a new attribute is added: long-term accumulated precipitation, to see the effect in filling the upstream tank
+""" 
+Making a Sparse Gaussian Process Regression model for CSO data prediction
+Sensor data is used. Mean function is created based on the SWMM data.
+Constraints are added on this code and plotted based on TRUNCATED GAUSSIAN distribution.
+Sparsed GP is evaluated for sensitivity to the number of inducing points (M).
 Author: Mohsen 
-Date: 03/03/2026
-updated: 10/04/2026 for getting results for the paper 
+Updated at: 29/07/2026
 """
 
+import pandas as pd 
 import numpy as np
-import pandas as pd
 import matplotlib.pyplot as plt
 import tensorflow as tf
 import gpflow 
 from sklearn.preprocessing import StandardScaler
 import matplotlib.dates as mdates
 import time
-from scipy.stats import truncnorm
-from scipy.cluster.vq import kmeans
+from scipy.stats import norm, truncnorm
+from scipy.cluster.vq import kmeans 
 from pathlib import Path
 import tensorflow_probability as tfp
 import pickle
 
-# load data
-BASE = Path(__file__).parent.parent.parent
+## Load Data
+BASE = Path(__file__).parent.parent.parent.parent
 
 data_path = BASE / "data" / "RAW_data" / "pickled_data"
 
 CSO = pd.read_pickle(
-    data_path / "overflow_to_CSO" / "sensor_bf_plsRKBA1101_rubbasin_ara_2021-01-01_to_2021-12-31.pkl")
+    data_path / "overflow_to_CSO" / "sensor_bf_plsRKBA1101_rubbasin_ara_2019-01-01_to_2019-12-31.pkl")
 precipitation = pd.read_pickle(
-    data_path / "precipitation" / "sensor_bn_r02_school_chatzenrainstr_2021_cleaned.pkl")
+    data_path / "precipitation" / "sensor_bn_r02_school_chatzenrainstr_2019_cleaned.pkl")
 
-# preprocess data
+
+##plotting font 
+plt.rcParams['font.family'] = 'times new roman'  
+
+## Preprocess Data
 CSO['timestamp'] = pd.to_datetime(CSO['timestamp'])
 precipitation['timestamp'] = pd.to_datetime(precipitation['timestamp'])
 
 # train parameters 
-train_start_time = pd.to_datetime("2021-04-10 00:00:00") #- pd.Timedelta(days=150)
+train_start_time = pd.to_datetime("2019-09-30 00:00:00") #- pd.Timedelta(days=150)
 train_days = 30  # Number of days for training
 train_end_time = train_start_time + pd.Timedelta(days=train_days)
 
@@ -55,6 +56,9 @@ M = 250
 mean_value = 0 # L/s
 min_flow = None # L/s
 max_flow = None # No upper limit 
+
+# Inducing points for Sensitivity Analysis
+M_values = [50, 75, 100, 150, 200, 300, 400, 500]
 
 CSO_train = CSO[(CSO['timestamp'] >= train_start_time) & (CSO['timestamp'] <= train_end_time)]
 precipitation_train = precipitation[(precipitation['timestamp'] >= train_start_time) & (precipitation['timestamp'] <= train_end_time)]
@@ -175,7 +179,7 @@ def preparing_data(merged_data, start_time, interval_minutes=timeinterval,
     return X_multi, Y, timestamps
 
 def initialize_smart_inducing_points(X_train, Y_train, total_M, scaled_threshold):
-    print("\nInitializing Stratified Inducing Points...")
+    # print("\nInitializing Stratified Inducing Points...")
     
     # Identify indices above and below the threshold
     is_above = (Y_train > scaled_threshold).flatten()
@@ -188,8 +192,8 @@ def initialize_smart_inducing_points(X_train, Y_train, total_M, scaled_threshold
     M_above = int(total_M * 0.5)
     M_below = total_M - M_above
     
-    print(f"  - Points > average level: {len(X_above)}. Allocating {M_above} inducing points.")
-    print(f"  - Points <= average level: {len(X_below)}. Allocating {M_below} inducing points.")
+    # print(f"  - Points > average level: {len(X_above)}. Allocating {M_above} inducing points.")
+    # print(f"  - Points <= average level: {len(X_below)}. Allocating {M_below} inducing points.")
     
     # K-means for ABOVE average
     if len(X_above) > M_above:
@@ -219,7 +223,7 @@ def initialize_smart_inducing_points(X_train, Y_train, total_M, scaled_threshold
         
     return Z_combined
 
-def build_gpr_model(X_train, Y_train, time_std_dev, scaler_Y=None, threshold_scaled=None):
+def build_gpr_model(X_train, Y_train, time_std_dev, scaler_Y, threshold_scaled, M):
     """
     Build and train SGPR model
     X_train: Scaled training data 
@@ -229,7 +233,7 @@ def build_gpr_model(X_train, Y_train, time_std_dev, scaler_Y=None, threshold_sca
     """ 
     minutes_in_day = 24 * 60
     scaled_period = minutes_in_day / time_std_dev  # Adjust period based on scaling
-    print(f"Scaled period for daily cycle: {scaled_period}")
+    # print(f"Scaled period for daily cycle: {scaled_period}")
     
     ### kernel design 
     time_kernel = gpflow.kernels.RBF(variance=1.0, active_dims=[0])
@@ -264,7 +268,7 @@ def build_gpr_model(X_train, Y_train, time_std_dev, scaler_Y=None, threshold_sca
     # Scale mean_value to match Y_train scaling
     if scaler_Y is not None:
         mean_scaled = scaler_Y.transform([[mean_value]])[0, 0]
-        print(f"Mean function: {mean_value} L/s (scaled: {mean_scaled:.4f})")
+        # print(f"Mean function: {mean_value} L/s (scaled: {mean_scaled:.4f})")
     else:
         mean_scaled = mean_value
     
@@ -287,8 +291,8 @@ def build_gpr_model(X_train, Y_train, time_std_dev, scaler_Y=None, threshold_sca
     opt.minimize(model.training_loss,
                  variables=model.trainable_variables,
                  method='L-BFGS-B')
-    print("\nModel Summary:")
-    gpflow.utilities.print_summary(model)
+    # print("\nModel Summary:")
+    # gpflow.utilities.print_summary(model)
     
     return model
 
@@ -361,260 +365,108 @@ def model_evaluation(Y_true, Y_pred, std_pred):
         "Entropy (nats)": mean_entropy
     }
     
-def plot_results(timestamps_train, Y_train, Y_pred_train, std_train,
-                 timestamps_test, Y_test, Y_pred_test, std_test, 
-                 min_level=None, max_level=None, sample_date=None,
-                 Z_timestamps=None, Z_values=None):
-    
+
+def plot_sensitivity_elbow(results_df):
     """
-    Plot training and test results with uncertainty.
-    Credible Intervals are clipped 
-    inducing points are shown on the plot 
+    Plots the Pareto front (Elbow curve) for the reviewer.
+    Left Y-axis: Test RMSE
+    Right Y-axis: Runtime (seconds)
     """
-    fig, ax = plt.subplots(figsize=(12, 6))
-    
-    # plotting training data 
-    ax.scatter(timestamps_train, Y_train.ravel(), c='blue', s=10, 
-               label='Training Data', alpha=0.3)
-    ax.plot(timestamps_train, Y_pred_train.ravel(), 'green', 
-            label='GPR Fit (Training)', linewidth=1.5)
-    ax.fill_between(timestamps_train, 
-                    Y_pred_train.ravel() - 1.96 * std_train.ravel(),
-                    Y_pred_train.ravel() + 1.96 * std_train.ravel(),
-                    alpha=0.2, color='green', label='95% CI (Training)')
-    # plotting inducing points 
-    if Z_timestamps is not None and Z_values is not None:
-        ax.scatter(Z_timestamps, Z_values.ravel(), c='purple', s=50, 
-                   label='Inducing Points', marker='|', zorder=5)
-    
-    # Plot test data
-    ax.scatter(timestamps_test, Y_test.ravel(), c='orange', s=15,
-               label='Test Data (Actual)', alpha=0.6)
-    ax.plot(timestamps_test, Y_pred_test.ravel(), 'red', 
-            label='GPR Prediction (Test)', linewidth=1.5)
-    lower_test = Y_pred_test.ravel() - 1.96 * std_test.ravel()
-    upper_test = Y_pred_test.ravel() + 1.96 * std_test.ravel()
-    if min_level is not None:
-        lower_test = np.maximum(lower_test, min_level)
-    if max_level is not None:
-        upper_test = np.minimum(upper_test, max_level)
-    
-    ax.fill_between(timestamps_test, lower_test, upper_test,
-                    alpha=0.2, color='red', label='95% CI (Test)')
-    
-    # Add vertical line separating train/test
-    ax.axvline(x=timestamps_train[-1], color='black', linestyle='--', 
-               linewidth=1.5, label='Train/Test Split', zorder=5)
-    
-    # vertical line showing the sample date
-    if sample_date is not None:
-        sample_ts = pd.to_datetime(sample_date)
-        ax.axvline(x=sample_ts, color='purple', linestyle=':', 
-                   linewidth=1.5, label='Point of Interest', zorder=5)
-    
-    # Formatting
-    ax.set_xlabel('Date', fontsize=12)
-    ax.set_ylabel('CSO (L/s)', fontsize=12)
-    ax.set_title(f'SGPR: CSO Prediction (Train: {train_days} days, Test: {test_hours} hours)', 
-                 fontsize=14)
-    ax.legend(fontsize=11, loc='best')
-    ax.grid(True, alpha=0.3)
-    
-    # Format x-axis
-    ax.xaxis.set_major_formatter(mdates.DateFormatter('%Y-%m-%d'))
-    ax.xaxis.set_major_locator(mdates.DayLocator(interval=2))
-    plt.xticks(rotation=45)
-    
-    plt.tight_layout()
+    fig, ax1 = plt.subplots(figsize=(10, 6))
+
+    color_rmse = 'tab:blue'
+    ax1.set_xlabel('Number of Inducing Points (M)', fontsize=12)
+    ax1.set_ylabel('Test RMSE (L/s)', color=color_rmse, fontsize=12)
+    ax1.plot(results_df['M'], results_df['Test_RMSE'], marker='o', color=color_rmse, linewidth=2, label='RMSE')
+    ax1.tick_params(axis='y', labelcolor=color_rmse)
+    ax1.grid(True, alpha=0.3)
+
+    ax2 = ax1.twinx()  
+    color_time = 'tab:red'
+    ax2.set_ylabel('Runtime (Seconds)', color=color_time, fontsize=12)  
+    ax2.plot(results_df['M'], results_df['Runtime_sec'], marker='s', color=color_time, linewidth=2, linestyle='--', label='Runtime')
+    ax2.tick_params(axis='y', labelcolor=color_time)
+
+    fig.suptitle('Sensitivity Analysis: Inducing Points (M) vs. Accuracy and Runtime', fontsize=14)
+    fig.tight_layout()  
     plt.show()
 
-def plot_point_of_interest(target_date_str, timestamps, X_scaled, model, 
-                           scaler_Y, Y_actual=None, min_val=None, max_val=None):
-    """
-    Plots the full probability distribution (PDF) for a specific timestamp.
-    Visualizes the difference between Raw Mean, Truncated Mean, and Mode.
-    Also shows the actual sensor value and its position in the distribution.
-    """
-    target_ts = pd.to_datetime(target_date_str)
-    time_diffs = np.abs(timestamps - target_ts)
-    idx = np.argmin(time_diffs)
-    actual_ts = timestamps[idx]
-
-    print(f"Plotting Point: {actual_ts}")
-    
-    # Getting Raw Parameters
-    x_input = X_scaled[idx].reshape(1, -1)
-    X_tf = tf.convert_to_tensor(x_input, dtype=tf.float64)
-    mean_sc, var_sc = model.predict_y(X_tf)
-    
-    # Unscale
-    mu_raw = scaler_Y.inverse_transform(mean_sc.numpy())[0][0]
-    sigma_raw = (np.sqrt(var_sc.numpy()) * scaler_Y.scale_)[0][0]
-    
-    # Truncation Bounds (Z-scores)
-    a, b = -np.inf, np.inf
-    if min_val is not None: a = (min_val - mu_raw) / sigma_raw
-    if max_val is not None: b = (max_val - mu_raw) / sigma_raw
-    
-    # MEAN (Center of Mass) - This is what your prediction() function returns
-    mu_truncated = truncnorm.mean(a, b, loc=mu_raw, scale=sigma_raw)
-    
-    # MODE (Highest Peak) - Visually where the curve is highest
-    if mu_raw < (min_val if min_val else -np.inf):
-        mode_truncated = min_val
-    elif mu_raw > (max_val if max_val else np.inf):
-        mode_truncated = max_val
-    else:
-        mode_truncated = mu_raw
-        
-    # x-axis range
-    x_min = mu_raw - 4*sigma_raw
-    if min_val is not None: x_min = min(x_min, min_val - 10)
-    x_max = mu_raw + 4*sigma_raw
-    if max_val is not None: x_max = max(x_max, max_val + 10)
-    
-    x_axis = np.linspace(x_min, x_max, 1000)
-    y_pdf = truncnorm.pdf(x_axis, a, b, loc=mu_raw, scale=sigma_raw)
-    
-    fig, ax = plt.subplots(figsize=(10, 6))
-    ax.plot(x_axis, y_pdf, 'b-', lw=2, label='Probability Density')
-    ax.fill_between(x_axis, y_pdf, alpha=0.1, color='blue')
-    
-    # A. Raw Mean (Where the bell curve WANTS to be)
-    ax.axvline(mu_raw, color='red', linestyle=':', linewidth=2, 
-               label=f'Raw Mean ({mu_raw:.1f})')
-    
-    # B. Truncated Mean (Prediction - Center of Mass)
-    ax.axvline(mu_truncated, color='green', linestyle='-', linewidth=2, 
-               label=f'Constrained Prediction ({mu_truncated:.1f})')
-    
-    # C. Actual Sensor Value (if provided)
-    if Y_actual is not None:
-        actual_value = Y_actual[idx]
-        # Handle numpy array by converting to scalar
-        if isinstance(actual_value, np.ndarray):
-            actual_value = actual_value.item() if actual_value.size == 1 else actual_value[0]
-        # Calculate the PDF value at the actual point
-        pdf_at_actual = truncnorm.pdf(actual_value, a, b, loc=mu_raw, scale=sigma_raw)
-        ax.plot(actual_value, pdf_at_actual, 'o', color='orange', markersize=12, 
-                label=f'Actual Sensor Value ({actual_value:.1f})', zorder=5, markeredgewidth=2, 
-                markeredgecolor='darkorange')
-    
-    # Plot Constraints
-    if min_val is not None:
-        ax.axvline(min_val, color='k', linewidth=3, label='Min Constraint')
-    if max_val is not None:
-        ax.axvline(max_val, color='k', linewidth=3, label='Max Constraint')
-    
-    ax.set_title(f"Prediction Distribution at {actual_ts}", fontsize=14)
-    ax.set_xlabel("CSO (l/s)", fontsize=12)
-    ax.set_ylabel("Probability", fontsize=12)
-    ax.legend()
-    ax.grid(True, alpha=0.3)
-    
-    plt.tight_layout()
-    plt.show()
-    
 def main():
     total_start = time.perf_counter()
-    print("="*70 + "\nNaive CSO GPR Prediction\n" + "="*70)
+    print("="*70)
+    print("SGPR SENSITIVITY ANALYSIS: INDUCING POINTS (M) FOR CSO")
+    print("="*70)
     
     # Find optimal lag
     print("\nPerforming cross-correlation analysis...")
     optimal_lag, correlations = find_optimal_short_term_rain_lag(merged_train, timeinterval)
-
+    
     # Prepare training data with optimal lag
     X_train, Y_train, timestamps_train = preparing_data(merged_train, train_start_time, timeinterval, 
                                                         short_lag_minutes=optimal_lag, long_lag_hours=24)
+    X_test, Y_test, timestamps_test = preparing_data(merged_test, train_start_time, timeinterval, 
+                                                     short_lag_minutes=optimal_lag, long_lag_hours=24)
     
     # Standardize
     scaler_X = StandardScaler()
     scaler_Y = StandardScaler()
     X_train_scaled = scaler_X.fit_transform(X_train)
     Y_train_scaled = scaler_Y.fit_transform(Y_train)
+    X_test_scaled = scaler_X.transform(X_test)
     
     # The average_CSO is physical data. We must scale it to match Y_train_scaled.
     threshold_scaled = scaler_Y.transform([[average_CSO]])[0, 0]
+    time_scale = scaler_X.scale_[0]
     
-    print("\nTraining SGPR model...")
-    # Pass Time Std Dev for Period Calculation
-    model = build_gpr_model(X_train_scaled, Y_train_scaled, scaler_X.scale_[0], scaler_Y, threshold_scaled)
+    # Store sensitivity analysis metrics
+    sensitivity_results = []
     
-    # --- PREDICTION ON TRAIN ---
-    Y_pred_train, std_train_y, std_train_f = prediction(model, X_train_scaled, scaler_Y,
-                                                         min_val=min_flow, 
-                                                         max_val=max_flow)
+    # Loop over M values
+    for M in M_values:
+        print(f"\n{'-'*50}")
+        print(f"Training SGPR Model with M = {M}")
+        print(f"{'-'*50}")
+        
+        start_time = time.perf_counter()
+        
+        # Build and Train Model
+        model = build_gpr_model(X_train_scaled, Y_train_scaled, time_scale, scaler_Y, threshold_scaled, M)
+        
+        # Predict on Train & Test
+        Y_pred_train, std_train_y, _ = prediction(model, X_train_scaled, scaler_Y, min_val=min_flow, max_val=max_flow)
+        Y_pred_test, std_test_y, _ = prediction(model, X_test_scaled, scaler_Y, min_val=min_flow, max_val=max_flow)
+        
+        # Evaluate
+        train_metrics = model_evaluation(Y_train, Y_pred_train, std_train_y)
+        test_metrics = model_evaluation(Y_test, Y_pred_test, std_test_y)
+        
+        run_time = time.perf_counter() - start_time
+        
+        print(f"Finished M={M} | Test RMSE: {test_metrics['RMSE (L/s)']:.3f} | Runtime: {run_time:.1f} sec")
+        
+        # Append to results
+        sensitivity_results.append({
+            'M': M,
+            'Train_RMSE': train_metrics['RMSE (L/s)'],
+            'Test_RMSE': test_metrics['RMSE (L/s)'],
+            'Test_MAE': test_metrics['MAE (L/s)'],
+            'Runtime_sec': run_time
+        })
     
-    # --- PREDICTION ON TEST ---
-    X_test, Y_test, timestamps_test = preparing_data(merged_test, train_start_time, timeinterval, 
-                                                     short_lag_minutes=optimal_lag, long_lag_hours=24)
-    X_test_scaled = scaler_X.transform(X_test)
+    # Create Summary DataFrame
+    results_df = pd.DataFrame(sensitivity_results)
+    print("\n" + "="*60)
+    print("SENSITIVITY ANALYSIS SUMMARY")
+    print("="*60)
+    print(results_df.round(3))
     
-    print(f"\nGenerating {test_hours}-hour predictions...")
-    # Use prediction function with truncated Gaussian constraints
-    Y_pred_test, std_test_y, std_test_f = prediction(model, X_test_scaled, scaler_Y,
-                                                      min_val=min_flow,
-                                                      max_val=max_flow)
+    # Plot the Elbow Curve
+    plot_sensitivity_elbow(results_df)
     
-    # Extracting inducing points for plotting
-    Z_scaled = model.inducing_variable.Z.numpy()
-    Z_unscaled = scaler_X.inverse_transform(Z_scaled)
-    Z_time_minutes = Z_unscaled[:, 0]
-    Z_timestamps = [train_start_time + pd.Timedelta(minutes=float(tm)) for tm in Z_time_minutes]
-    mu_Z_scaled, _ = model.predict_f(Z_scaled)
-    Z_values = scaler_Y.inverse_transform(mu_Z_scaled.numpy())
-    
-    # --- COMPARISON TABLE ---
-    train_metrics = model_evaluation(Y_train, Y_pred_train, std_train_y)
-    test_metrics = model_evaluation(Y_test, Y_pred_test, std_test_y)
-    
-    results_df = pd.DataFrame({
-        'Training Set': train_metrics,
-        'Test Set': test_metrics
-    })
-    
-    print("\n" + "="*50)
-    print("MODEL PERFORMANCE")
-    print("="*50)
-    print(results_df.round(4))
-    print("="*50)
-    
-    total_time = time.perf_counter() - total_start
-    print(f"\nTotal execution time: {total_time:.1f} seconds")
-    print("Prediction complete!")
-    #--- PLOTTING ---
-    sample_date = None  # 
-    plot_results(timestamps_train, Y_train, Y_pred_train, std_train_y,
-                 timestamps_test, Y_test, Y_pred_test, std_test_y,
-                 min_level=min_flow, max_level=max_flow,
-                 sample_date=sample_date,
-                 Z_timestamps=Z_timestamps, Z_values=Z_values)
+    # Save the sensitivity data to a CSV for manuscript tables/plotting later
+    save_path = BASE / "CSO_prediction"/ "constrained_data_driven_prediction" / "sensitivity_analysis" / "CSO_SGPR_Sensitivity_Analysis_2019.csv"
+    results_df.to_csv(save_path, index=False)
+    print(f"\nSensitivity analysis data saved to: {save_path}")
 
-
-    # saving figures for a later use 
-    results_data = {
-        'train': {
-            'time': timestamps_train,
-            'actual': Y_train.ravel(),
-            'pred': Y_pred_train.ravel(),
-            'std': std_train_y.ravel()  
-        },
-        'test': {
-            'time': timestamps_test,
-            'actual': Y_test.ravel(),
-            'pred': Y_pred_test.ravel(),
-            'std': std_test_y.ravel()
-        },
-        'metadata': {
-            'train_days': train_days,
-            'test_hours': test_hours
-        }
-    }
-    #save_path = BASE / "results" / "CSO_outputs" / "2021_CSO_SGPR_stratified_M250_5min_mean.pkl"
-    #with open(save_path, 'wb') as f:
-    #    pickle.dump(results_data, f)
-    #print(f"Data successfully saved to: {save_path}")
-    
 if __name__ == "__main__":
     main()
-

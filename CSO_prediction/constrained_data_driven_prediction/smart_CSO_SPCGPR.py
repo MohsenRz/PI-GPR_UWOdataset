@@ -18,28 +18,28 @@ import gpflow
 from sklearn.preprocessing import StandardScaler
 import matplotlib.dates as mdates
 import time
-from scipy.stats import truncnorm
+from scipy.stats import truncnorm   
 from scipy.cluster.vq import kmeans
 from pathlib import Path
 import tensorflow_probability as tfp
 
 # load data
-BASE = Path(__file__).parent.parent
+BASE = Path(__file__).parent.parent.parent 
 
-data_path = BASE / "RAW_data" / "pickled_data"
+data_path = BASE / "data" /"RAW_data" / "pickled_data"
 
 CSO = pd.read_pickle(
-    data_path / "overflow_to_CSO" / "sensor_bf_plsRKBA1101_rubbasin_ara_2019-01-01_to_2019-12-31.pkl")
+    data_path / "overflow_to_CSO" / "sensor_bf_plsRKBA1101_rubbasin_ara_2021-01-01_to_2021-12-31.pkl")
 precipitation = pd.read_pickle(
-    data_path / "precipitation" / "sensor_bn_r02_school_chatzenrainstr_2019_cleaned.pkl")
+    data_path / "precipitation" / "sensor_bn_r02_school_chatzenrainstr_2021_cleaned.pkl")
 
 # preprocess data
 CSO['timestamp'] = pd.to_datetime(CSO['timestamp'])
 precipitation['timestamp'] = pd.to_datetime(precipitation['timestamp'])
 
 # train parameters 
-train_start_time = pd.to_datetime("2019-05-01 00:00:00")
-train_days = 60  # Number of days for training
+train_start_time = pd.to_datetime("2021-04-10 00:00:00")
+train_days = 30  # Number of days for training
 train_end_time = train_start_time + pd.Timedelta(days=train_days)
 
 # test parameters
@@ -48,7 +48,7 @@ test_end_time = train_end_time + pd.Timedelta(hours=test_hours)
 timeinterval = 15 # minutes 
 
 # inducing points 
-M = 500
+M = 250
 
 # constraints 
 mean_value = 0 # L/s
@@ -185,7 +185,7 @@ def initialize_smart_inducing_points(X_train, Y_train, total_M, scaled_threshold
     X_below = X_train[is_below]
     
     # Allocate 50% to active periods, 50% to flat periods
-    M_above = int(total_M * 0.5)
+    M_above = int(total_M * 0.7)
     M_below = total_M - M_above
     
     print(f"  - Points > average level: {len(X_above)}. Allocating {M_above} inducing points.")
