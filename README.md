@@ -47,6 +47,8 @@ conda activate myenv1
 
 ## 📝 Citation
 If you find this code, data, or framework useful in your research, please consider citing our preprint:
+
+```bibtex
 @article{rezaee2026physics,
   title={Physics-Constrained Gaussian Process Regression for Predicting Flow in an Urban Drainage System},
   author={Rezaee, Mohsen and Melville-Shreeve, Peter and Rappel, Hussein},
