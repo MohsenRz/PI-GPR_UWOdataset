@@ -2,7 +2,7 @@
 
 [![Python 3.8+](https://img.shields.io/badge/python-3.8+-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![Preprint](https://img.shields.io/badge/Preprint-Available_Here-orange)](https://doi.org/10.31224/7256)
+[![Preprint](https://img.shields.io/badge/Preprint-EarthArXiv-orange.svg)](https://doi.org/10.31224/7256)
 
 This repository contains the official code, models, and results for the paper **"Physics-Informed Gaussian Process Regression for Predicting Flow in an Urban Drainage System."** 
 
@@ -44,3 +44,14 @@ git clone [https://github.com/MohsenRz/PI-GPR_UWOdataset.git](https://github.com
 cd PI-GPR_UWOdataset
 conda env create -f environment.yml
 conda activate myenv1
+
+## 📝 Citation
+If you find this code, data, or framework useful in your research, please consider citing our preprint:
+@article{rezaee2026physics,
+  title={Physics-Constrained Gaussian Process Regression for Predicting Flow in an Urban Drainage System},
+  author={Rezaee, Mohsen and Melville-Shreeve, Peter and Rappel, Hussein},
+  journal={EarthArXiv},
+  year={2026},
+  doi={10.31224/7256},
+  url={[https://doi.org/10.31224/7256](https://doi.org/10.31224/7256)}
+}
