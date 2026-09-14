@@ -23,21 +23,21 @@ import tensorflow_probability as tfp
 import pickle
 
 # load data
-BASE = Path(__file__).parent.parent
+BASE = Path(__file__).parent.parent.parent
 
-data_path = BASE / "RAW_data" / "pickled_data"
+data_path = BASE / "data" / "RAW_data" / "pickled_data"
 
 CSO = pd.read_pickle(
-    data_path / "overflow_to_CSO" / "sensor_bf_plsRKBA1101_rubbasin_ara_2019-01-01_to_2019-12-31.pkl")
+    data_path / "overflow_to_CSO" / "sensor_bf_plsRKBA1101_rubbasin_ara_2021-01-01_to_2021-12-31.pkl")
 precipitation = pd.read_pickle(
-    data_path / "precipitation" / "sensor_bn_r02_school_chatzenrainstr_2019_cleaned.pkl")
+    data_path / "precipitation" / "sensor_bn_r02_school_chatzenrainstr_2021_cleaned.pkl")
 
 # preprocess data
 CSO['timestamp'] = pd.to_datetime(CSO['timestamp'])
 precipitation['timestamp'] = pd.to_datetime(precipitation['timestamp'])
 
 # train parameters 
-train_start_time = pd.to_datetime("2019-09-30 00:00:00")
+train_start_time = pd.to_datetime("2021-04-10 00:00:00")
 train_days = 30  # Number of days for training
 train_end_time = train_start_time + pd.Timedelta(days=train_days)
 
@@ -241,11 +241,16 @@ def model_evaluation(Y_true, Y_pred, std_pred):
     entropy_per_point = 0.5 * np.log2(2 * np.pi * np.e * variance)
     mean_entropy = np.mean(entropy_per_point)
     
+    max_true = np.max(Y_true.ravel())
+    max_pred = np.max(Y_pred.ravel())
+    
     return {
         "RMSE (L/s)": RMSE,
         "MAE (L/s)": MAE,
         "Coverage (%)": coverage * 100,
-        "Entropy (nats)": mean_entropy
+        "Entropy (nats)": mean_entropy,
+        "Max Actual (L/s)": max_true,
+        "Max Predicted (L/s)": max_pred
     }
     
 def plot_results(timestamps_train, Y_train, Y_pred_train, std_train,
@@ -363,7 +368,7 @@ def main():
     plot_results(timestamps_train, Y_train, Y_pred_train, std_train_y,
                  timestamps_test, Y_test, Y_pred_test, std_test_y)
 
-
+    """
     # saving figures for a later use 
     results_data = {
         'train': {
@@ -387,7 +392,7 @@ def main():
     with open(save_path, 'wb') as f:
         pickle.dump(results_data, f)
     print(f"Data successfully saved to: {save_path}")
-    
+    """
 if __name__ == "__main__":
     main()
 

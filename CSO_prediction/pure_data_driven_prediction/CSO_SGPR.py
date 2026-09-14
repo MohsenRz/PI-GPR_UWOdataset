@@ -20,9 +20,9 @@ from pathlib import Path
 import tensorflow_probability as tfp
 
 # load data
-BASE = Path(__file__).parent.parent
+BASE = Path(__file__).parent.parent.parent
 
-data_path = BASE / "RAW_data" / "pickled_data"
+data_path = BASE / "data" / "RAW_data" / "pickled_data"
 
 CSO = pd.read_pickle(
     data_path / "overflow_to_CSO" / "sensor_bf_plsRKBA1101_rubbasin_ara_2019-01-01_to_2019-12-31.pkl")
@@ -227,11 +227,16 @@ def model_evaluation(Y_true, Y_pred, std_pred):
     entropy_per_point = 0.5 * np.log2(2 * np.pi * np.e * variance)
     mean_entropy = np.mean(entropy_per_point)
     
+    max_true = np.max(Y_true.ravel())
+    max_pred = np.max(Y_pred.ravel())
+    
     return {
         "RMSE (L/s)": RMSE,
         "MAE (L/s)": MAE,
         "Coverage (%)": coverage * 100,
-        "Entropy (nats)": mean_entropy
+        "Entropy (nats)": mean_entropy,
+        "Max Actual (L/s)": max_true,
+        "Max Predicted (L/s)": max_pred
     }
     
 def plot_results(timestamps_train, Y_train, Y_pred_train, std_train,

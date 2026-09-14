@@ -39,21 +39,21 @@ CSO['timestamp'] = pd.to_datetime(CSO['timestamp'])
 precipitation['timestamp'] = pd.to_datetime(precipitation['timestamp'])
 
 # train parameters 
-train_start_time = pd.to_datetime("2021-04-10 00:00:00") #- pd.Timedelta(days=150)
-train_days = 30  # Number of days for training
+train_start_time = pd.to_datetime("2021-04-10 00:00:00") - pd.Timedelta(days=60)
+train_days = 90  # Number of days for training
 train_end_time = train_start_time + pd.Timedelta(days=train_days)
 
 # test parameters
 test_hours = 5 * 24  # Hours to predict
 test_end_time = train_end_time + pd.Timedelta(hours=test_hours)
-timeinterval = 5 # minutes 
+timeinterval = 15 # minutes 
 
 # inducing points 
 M = 250    
 
 # constraints 
 mean_value = 0 # L/s
-min_flow = None # L/s
+min_flow = 0 # L/s
 max_flow = None # No upper limit 
 
 CSO_train = CSO[(CSO['timestamp'] >= train_start_time) & (CSO['timestamp'] <= train_end_time)]
@@ -354,11 +354,16 @@ def model_evaluation(Y_true, Y_pred, std_pred):
     entropy_per_point = 0.5 * np.log2(2 * np.pi * np.e * variance)
     mean_entropy = np.mean(entropy_per_point)
     
+    max_true = np.max(Y_true.ravel())
+    max_pred = np.max(Y_pred.ravel())
+    
     return {
         "RMSE (L/s)": RMSE,
         "MAE (L/s)": MAE,
         "Coverage (%)": coverage * 100,
-        "Entropy (nats)": mean_entropy
+        "Entropy (nats)": mean_entropy,
+        "Max Actual (L/s)": max_true,
+        "Max Predicted (L/s)": max_pred
     }
     
 def plot_results(timestamps_train, Y_train, Y_pred_train, std_train,
@@ -590,7 +595,7 @@ def main():
                  sample_date=sample_date,
                  Z_timestamps=Z_timestamps, Z_values=Z_values)
 
-
+    """
     # saving figures for a later use 
     results_data = {
         'train': {
@@ -610,11 +615,11 @@ def main():
             'test_hours': test_hours
         }
     }
-    #save_path = BASE / "results" / "CSO_outputs" / "2021_CSO_SGPR_stratified_M250_5min_mean.pkl"
-    #with open(save_path, 'wb') as f:
-    #    pickle.dump(results_data, f)
-    #print(f"Data successfully saved to: {save_path}")
-    
+    save_path = BASE / "results" / "CSO_outputs" / "2021_CSO_SGPR_stratified_M250_5min_mean.pkl"
+    with open(save_path, 'wb') as f:
+        pickle.dump(results_data, f)
+    print(f"Data successfully saved to: {save_path}")
+    """
 if __name__ == "__main__":
     main()
 

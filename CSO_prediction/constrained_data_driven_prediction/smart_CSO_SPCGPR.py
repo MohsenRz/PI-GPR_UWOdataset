@@ -344,11 +344,16 @@ def model_evaluation(Y_true, Y_pred, std_pred):
     entropy_per_point = 0.5 * np.log2(2 * np.pi * np.e * variance)
     mean_entropy = np.mean(entropy_per_point)
     
+    max_true = np.max(Y_true.ravel())
+    max_pred = np.max(Y_pred.ravel())
+    
     return {
         "RMSE (L/s)": RMSE,
         "MAE (L/s)": MAE,
         "Coverage (%)": coverage * 100,
-        "Entropy (nats)": mean_entropy
+        "Entropy (nats)": mean_entropy,
+        "Max Actual (L/s)": max_true,
+        "Max Predicted (L/s)": max_pred
     }
     
 def plot_results(timestamps_train, Y_train, Y_pred_train, std_train,
